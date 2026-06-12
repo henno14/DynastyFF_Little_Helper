@@ -1579,6 +1579,16 @@ elif page == "📋 Rosters":
         .size()
         .reset_index(name="Players")
     )
+
+    # League positional rank (value-based, QB/RB/WR/TE only) shown inside each segment
+    def _rc_rank(team_name, pos):
+        _rid = team_name_to_rid.get(team_name)
+        if _rid is None:
+            return ""
+        _rank = team_data.get(_rid, {}).get("pos_league_rank", {}).get(pos)
+        return f"#{_rank}" if _rank else ""
+    _rc_df["Rank"] = _rc_df.apply(lambda r: _rc_rank(r["Team"], r["Pos"]), axis=1)
+
     # Sort teams by total roster size descending
     _team_order = (
         _rc_df.groupby("Team")["Players"].sum()
@@ -1592,10 +1602,11 @@ elif page == "📋 Rosters":
         y="Players",
         color="Pos",
         barmode="stack",
+        text="Rank",
         color_discrete_map=_POS_COLORS,
         category_orders={"Pos": _POS_ORDER, "Team": _team_order},
         template="plotly_dark" if _theme == "Dark" else "plotly_white",
-        hover_data={"Team": True, "Pos": True, "Players": True},
+        hover_data={"Team": True, "Pos": True, "Players": True, "Rank": True},
     )
     _fig_rc.update_layout(
         height=420,
@@ -1605,9 +1616,17 @@ elif page == "📋 Rosters":
         xaxis_tickangle=-30,
         margin=dict(t=10, b=10, l=0, r=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        uniformtext_minsize=9,
+        uniformtext_mode="show",
     )
-    _fig_rc.update_traces(marker_line_width=0)
+    _fig_rc.update_traces(
+        marker_line_width=0,
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=11, color="white"),
+    )
     st.plotly_chart(_fig_rc, use_container_width=True)
+    st.caption("#N inside a segment = that team's league rank at the position (by avg value, QB/RB/WR/TE only).")
 
 # ── Page: Draft Picks ────────────────────────────────────────────────────────
 elif page == "🎯 Draft Picks":
