@@ -95,6 +95,26 @@ def save_prefs(**updates):
     elif os.path.exists(MY_TEAM_FILE):
         os.remove(MY_TEAM_FILE)
 
+FAVORITES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favorites.json")
+
+def load_favorites():
+    """Load persisted favourite player names. Returns a set."""
+    if os.path.exists(FAVORITES_FILE):
+        try:
+            with open(FAVORITES_FILE) as f:
+                return set(json.load(f))
+        except Exception as e:
+            print(f"[WARNING] Could not load favorites from {FAVORITES_FILE}: {e}")
+    return set()
+
+def save_favorites(favs):
+    """Persist favourite player names (or remove the file when empty)."""
+    if favs:
+        with open(FAVORITES_FILE, "w") as f:
+            json.dump(sorted(favs), f, indent=2)
+    elif os.path.exists(FAVORITES_FILE):
+        os.remove(FAVORITES_FILE)
+
 def player_name(p, fallback=""):
     """Return 'First Last' from a Sleeper player dict, or fallback if empty."""
     return f"{p.get('first_name', '')} {p.get('last_name', '')}".strip() or fallback
@@ -424,6 +444,34 @@ COL_CFG = {
     "Cons. Avg":                    st.column_config.NumberColumn(format="%d"),
     "Points":                       st.column_config.NumberColumn(format="%.2f"),
 }
+
+
+def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
+    """Render a grid with a clickable ⭐ favourites column (first column).
+    Favourites are keyed by player display name, shared across all grids,
+    and persisted to favorites.json. Only the ⭐ column is editable.
+    styler_fn: optional fn(df) -> Styler for row highlighting (applies to
+    non-editable columns only, per st.data_editor behaviour)."""
+    favs = st.session_state.favorites
+    dv = dv.copy().reset_index(drop=True)
+    dv.insert(0, "⭐", dv[name_col].map(lambda n: n in favs))
+    cfg = {**(col_cfg or {}), "⭐": st.column_config.CheckboxColumn("⭐", default=False)}
+    disabled = [c for c in dv.columns if c != "⭐"]
+    data = styler_fn(dv) if styler_fn else dv
+    edited = st.data_editor(
+        data, use_container_width=True, hide_index=True,
+        key=editor_key, column_config=cfg, disabled=disabled,
+    )
+    new_favs = set(favs)
+    for _, row in edited.iterrows():
+        if row["⭐"]:
+            new_favs.add(row[name_col])
+        else:
+            new_favs.discard(row[name_col])
+    if new_favs != favs:
+        st.session_state.favorites = new_favs
+        save_favorites(new_favs)
+        st.rerun()
 
 # ── Data loading (cached) ─────────────────────────────────────────────────────
 
@@ -1105,6 +1153,8 @@ with st.spinner("Loading value sources (DN · KTC · DP)..."):
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
 st.session_state.setdefault("app_theme", "System Default")
+if "favorites" not in st.session_state:
+    st.session_state.favorites = load_favorites()
 
 # ── Sidebar: identity + value source (rendered early — value_source drives the
 #    data pipeline below; team names derive straight from rosters/users) ───────
@@ -1778,6 +1828,7 @@ elif page == "🔍 Free Agents":
                                       placeholder="All positions")
     col_b.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
     incl_rookies  = col_b.checkbox("Include Rookies", value=False, key="fa_rookies")
+    fa_fav_only   = col_b.checkbox("⭐ Favourites only", key="fa_fav_only")
     min_val       = col_c.number_input("Min Value", min_value=0, value=0, step=100, key="fa_min")
     fa_srch       = col_d.text_input("Search player name", key="fa_name", placeholder="e.g. Austin Ekeler")
 
@@ -1786,6 +1837,7 @@ elif page == "🔍 Free Agents":
     if not incl_rookies: mask &= df_fa["Exp"] != "Rookie"
     if min_val > 0:      mask &= df_fa[val_col].notna() & (df_fa[val_col] >= min_val)
     if fa_srch:          mask &= df_fa["Player"].str.contains(fa_srch, case=False, na=False)
+    if fa_fav_only:      mask &= df_fa["Player"].isin(st.session_state.favorites)
     dv = df_fa[mask]
 
     # Build display columns dynamically based on selected source
@@ -1800,11 +1852,8 @@ elif page == "🔍 Free Agents":
         val_col: COL_CFG["Value"],
     }
 
-    st.dataframe(
-        dv[fa_display_cols], use_container_width=True, hide_index=True,
-        column_config=fa_col_cfg,
-    )
-    st.caption(f"{len(dv):,} free agents shown · Value source: **{value_source}**")
+    fav_grid(dv[fa_display_cols], "Player", "fa_fav_grid", col_cfg=fa_col_cfg)
+    st.caption(f"{len(dv):,} free agents shown · Value source: **{value_source}** · click ⭐ to favourite")
 
     # ── Pickup & Drop Advisor ─────────────────────────────────────────────────
     st.divider()
@@ -1987,24 +2036,25 @@ elif page == "🌟 2026 Rookies":
     df_rk = build_rookies_df(fc_rookies, rosters, fc_values=fc_values, val_maps=val_maps, value_source=value_source)
     df_rk = df_rk.rename(columns={"Value": val_col})
 
-    col_a, col_b, col_c = st.columns([2, 2, 3])
+    col_a, col_b, col_c, col_d = st.columns([2, 2, 3, 1])
     sel_rk_pos  = col_a.multiselect("Positions",    sorted(df_rk["Pos"].unique().tolist()), key="rk_pos",
                                     placeholder="All positions")
     sel_rk_rost = col_b.selectbox("Roster Status",  ["All", "On Roster", "Not Rostered"],   key="rk_rost")
     rk_srch     = col_c.text_input("Search player name", key="rk_name", placeholder="e.g. Ashton Jeanty")
+    col_d.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
+    rk_fav_only = col_d.checkbox("⭐ Only", key="rk_fav_only")
 
     mask = pd.Series(True, index=df_rk.index)
     if sel_rk_pos:                      mask &= df_rk["Pos"].isin(sel_rk_pos)
     if sel_rk_rost == "On Roster":      mask &= df_rk["On Roster"] == "Yes"
     elif sel_rk_rost == "Not Rostered": mask &= df_rk["On Roster"] == "No"
     if rk_srch:                         mask &= df_rk["Player"].str.contains(rk_srch, case=False, na=False)
+    if rk_fav_only:                     mask &= df_rk["Player"].isin(st.session_state.favorites)
     dv = df_rk[mask]
 
-    st.dataframe(
-        dv, use_container_width=True, hide_index=True,
-        column_config={val_col: COL_CFG["Value"], "Rank": COL_CFG["Rank"]},
-    )
-    st.caption(f"{len(dv)} rookies shown · Value source: **{value_source}**")
+    fav_grid(dv, "Player", "rk_fav_grid",
+             col_cfg={val_col: COL_CFG["Value"], "Rank": COL_CFG["Rank"]})
+    st.caption(f"{len(dv)} rookies shown · Value source: **{value_source}** · click ⭐ to favourite")
 
 # ── Page: Scoring Rules ──────────────────────────────────────────────────────
 elif page == "📊 Scoring Rules":
@@ -2133,11 +2183,14 @@ elif page == "👥 Players":
     sel_pl_team = col_pc.multiselect("Team",        sorted(df_pl["Owner"].unique().tolist()), key="pl_team", placeholder="All teams")
     pl_srch     = col_pd.text_input("Search player", key="pl_name", placeholder="e.g. Ja'Marr Chase")
 
+    pl_fav_only = st.checkbox("⭐ Favourites only", key="pl_fav_only")
+
     pl_mask = pd.Series(True, index=df_pl.index)
     if sel_pl_pos:  pl_mask &= df_pl["Pos"].isin(sel_pl_pos)
     if sel_pl_slot: pl_mask &= df_pl["Roster Spot"].isin(sel_pl_slot)
     if sel_pl_team: pl_mask &= df_pl["Owner"].isin(sel_pl_team)
     if pl_srch:     pl_mask &= df_pl["Player"].str.contains(pl_srch, case=False, na=False)
+    if pl_fav_only: pl_mask &= df_pl["Player"].isin(st.session_state.favorites)
     dv_pl = df_pl[pl_mask].sort_values("FC D Value", ascending=False, na_position="last")
 
     _pl_col_cfg = {
@@ -2148,16 +2201,15 @@ elif page == "👥 Players":
         f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
         "Pos Rank":            COL_CFG["Rank"],
     }
+    _pl_styler = None
     if my_team and (dv_pl["Owner"] == my_team).any():
         _pl_hl = "background-color: rgba(255, 196, 0, 0.18)"
-        _pl_styled = dv_pl.style.apply(
+        _pl_styler = lambda d: d.style.apply(
             lambda row: [_pl_hl if row["Owner"] == my_team else "" for _ in row], axis=1
         )
-        st.dataframe(_pl_styled, use_container_width=True, hide_index=True, column_config=_pl_col_cfg)
-    else:
-        st.dataframe(dv_pl, use_container_width=True, hide_index=True, column_config=_pl_col_cfg)
-    _pl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv_pl["Owner"] == my_team).any() else ""
-    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale{_pl_note}")
+    fav_grid(dv_pl, "Player", "pl_fav_grid", col_cfg=_pl_col_cfg, styler_fn=_pl_styler)
+    _pl_note = f" · gold = {my_team}" if my_team and (dv_pl["Owner"] == my_team).any() else ""
+    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale · click ⭐ to favourite{_pl_note}")
 
 # ── Page: Trending ───────────────────────────────────────────────────────────
 elif page == "📈 Trending":
@@ -2998,20 +3050,24 @@ elif page == "🏟️ Draft Room":
         )
     ]
 
-    pool_col1, pool_col2 = st.columns([2, 3])
+    pool_col1, pool_col2, pool_col3 = st.columns([2, 3, 1])
     pool_pos  = pool_col1.multiselect("Filter by position", SKILL_POSITIONS, key="dr_pool_pos")
     pool_srch = pool_col2.text_input("Search pool", key="dr_pool_srch", placeholder="e.g. Jeanty")
+    pool_col3.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
+    pool_fav  = pool_col3.checkbox("⭐ Only", key="dr_pool_fav")
 
     df_pool = pd.DataFrame(pool_rows)
     if not df_pool.empty:
         if pool_srch: df_pool = df_pool[df_pool["Rookie"].str.contains(pool_srch, case=False, na=False)]
         if pool_pos:  df_pool = df_pool[df_pool["Pos"].isin(pool_pos)]
+        if pool_fav:  df_pool = df_pool[df_pool["Rookie"].isin(st.session_state.favorites)]
 
-    st.dataframe(
-        df_pool, use_container_width=True, hide_index=True,
-        column_config={"Value": COL_CFG["Value"]},
-    )
-    st.caption(f"{len(df_pool)} rookies still available")
+    if df_pool.empty:
+        st.info("No rookies match the current filters.")
+    else:
+        fav_grid(df_pool, "Rookie", "dr_pool_fav_grid",
+                 col_cfg={"Value": COL_CFG["Value"]})
+    st.caption(f"{len(df_pool)} rookies still available · click ⭐ to favourite")
 
 # ── Page: Fantasy News ───────────────────────────────────────────────────────
 elif page == "📰 Fantasy News":
