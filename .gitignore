@@ -1,0 +1,13 @@
+# Data caches — regenerated automatically
+*_cache.json
+*_cache_*.json
+sleeper_stats_cache*.json
+
+# User data / output
+draft_selections.json
+my_team.json
+*.xlsx
+
+# OS / editor
+.DS_Store
+~$*

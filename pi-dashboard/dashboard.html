@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta http-equiv="refresh" content="3600">
+<link rel="apple-touch-icon" href="/icon.png">
+<title>Dashboard</title>
+<style>
+/* SINGLE-COLUMN LAYOUT — 1024x748 viewport
+   clock ~65px + conditions ~150px + hourly ~88px + forecast ~95px
+   + news flex:1 ~270px + padding 28px + gaps 4x10px = 736px  OK
+*/
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100vh; overflow: hidden;
+  background: #000; color: #fff;
+  font-family: -apple-system, Helvetica, Arial, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 28px 14px 28px;
+  gap: 10px;
+  overflow: hidden;
+}
+
+
+/* ── Conditions ──────────────────────────────── */
+#zone-conditions { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; text-align: center; }
+#cond-main       { display: flex; flex-direction: column; align-items: center; }
+#temp-line       { display: flex; align-items: center; gap: 12px; }
+#temp            { font-size: 64px; font-weight: 300; line-height: 1; }
+#icon            { font-size: 50px; line-height: 1; }
+#conditions      { font-size: 16px; color: #999; margin-top: 5px; }
+#meta            { font-size: 12px; color: #666; margin-top: 7px; line-height: 1.8; }
+#sun-times       { font-size: 11px; color: #886633; margin-top: 5px; }
+#moon-wrap       { margin-top: 8px; text-align: center; }
+#moon-svg        { width: 78px; margin: 0 auto; }
+#moon-name       { font-size: 10px; color: #444; margin-top: 4px; }
+
+/* ── Divider ─────────────────────────────────── */
+.dv { border: none; border-top: 0.5px solid #1a1a1a; flex-shrink: 0; }
+
+.zone-label {
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: #333; margin-bottom: 7px; padding-top: 6px;
+}
+
+/* ── Hourly ──────────────────────────────────── */
+#zone-hourly { flex-shrink: 0; }
+#hourly { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.h-cell  { text-align: center; background: #0d0d0d; border-radius: 8px; padding: 8px 4px; }
+.h-label { font-size: 11px; color: #555; }
+.h-icon  { font-size: 22px; line-height: 1; margin: 3px 0; }
+.h-temp  { font-size: 15px; color: #ccc; }
+.h-pct   { font-size: 10px; color: #4466cc; }
+
+/* ── Forecast ────────────────────────────────── */
+#zone-forecast { flex-shrink: 0; }
+#forecast { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.fc-card {
+  background: #0d0d0d; border-radius: 8px; padding: 10px 8px;
+  text-align: center; display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.fc-day   { font-size: 11px; color: #666; }
+.fc-icon  { font-size: 24px; line-height: 1; }
+.fc-range { font-size: 14px; color: #ccc; }
+.fc-pct   { font-size: 11px; color: #4466cc; }
+
+/* ── News ────────────────────────────────────── */
+#zone-news  { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#news-block { display: flex; flex-direction: column; opacity: 1; transition: opacity 0.5s ease; }
+.news-item  { padding: 8px 0; border-top: 0.5px solid #1a1a1a; }
+.news-src   { display: block; font-size: 10px; color: #2e5a88; margin-bottom: 3px; letter-spacing: 0.04em; }
+.news-txt   { font-size: 14px; color: #999; line-height: 1.45; }
+
+#stale { position: fixed; bottom: 4px; right: 10px; font-size: 10px; color: #1e3a1e; }
+</style>
+</head>
+<body>
+
+<div id="zone-conditions">
+  <div id="cond-main">
+    <div id="temp-line">
+      <span id="temp">&mdash;</span>
+      <span id="icon"></span>
+    </div>
+    <div id="conditions"></div>
+    <div id="meta"></div>
+    <div id="sun-times"></div>
+  </div>
+  <div id="moon-wrap">
+    <div id="moon-svg"></div>
+    <div id="moon-name"></div>
+  </div>
+</div>
+
+<hr class="dv">
+
+<div id="zone-hourly">
+  <div class="zone-label">Hourly</div>
+  <div id="hourly"></div>
+</div>
+
+<hr class="dv">
+
+<div id="zone-forecast">
+  <div class="zone-label">5 Day Forecast</div>
+  <div id="forecast"></div>
+</div>
+
+<hr class="dv">
+
+<div id="zone-news">
+  <div id="zone-news-label" class="zone-label">News</div>
+  <div id="news-block"></div>
+</div>
+
+<div id="stale">&#9679; stale</div>
+
+<script>
+/* Weather icons: single hand-drawn SVG set so every icon shares one
+   visual style (emoji render inconsistently across Unicode blocks on iOS). */
+var WX_CLOUD = 'M10.5 24.5h13a5.5 5.5 0 0 0 1-10.9 8 8 0 0 0-15.4-1.5 6.2 6.2 0 0 0 1.4 12.4Z';
+function wxCloud(color, ty) {
+  return '<path d="' + WX_CLOUD + '" fill="' + color + '"' +
+         (ty ? ' transform="translate(0,' + ty + ')"' : '') + '/>';
+}
+var WX_SUN = '<circle cx="16" cy="16" r="6.2" fill="#ffcf5c"/>' +
+  '<g stroke="#ffcf5c" stroke-width="2.2" stroke-linecap="round">' +
+  '<path d="M16 3.5v3.5M16 25v3.5M3.5 16H7M25 16h3.5M7.2 7.2l2.4 2.4M22.4 22.4l2.4 2.4M7.2 24.8l2.4-2.4M22.4 9.6l2.4-2.4"/></g>';
+var WX_MOON = '<path d="M20.5 4.5a11.5 11.5 0 1 0 7 15.5 9.5 9.5 0 0 1-7-15.5Z" fill="#d9d4b8"/>';
+var WX_SUN_SM = '<circle cx="22.5" cy="8.5" r="4" fill="#ffcf5c"/>' +
+  '<g stroke="#ffcf5c" stroke-width="1.8" stroke-linecap="round">' +
+  '<path d="M22.5 1.5v2.2M29.5 8.5h-2.2M27.6 3.4l-1.6 1.6M17.4 3.4l1.6 1.6M15.5 8.5h2.2"/></g>';
+var WX_MOON_SM = '<path d="M24 2.5a7.5 7.5 0 1 0 4.6 10.1A6.2 6.2 0 0 1 24 2.5Z" fill="#d9d4b8"/>';
+var WX_DROPS = '<g stroke="#5b9bd5" stroke-width="2.2" stroke-linecap="round">' +
+  '<path d="M11 24.5l-1.6 4.5M16.5 24.5l-1.6 4.5M22 24.5l-1.6 4.5"/></g>';
+var WX_SNOW = '<g fill="#dfe8f2"><circle cx="11" cy="26.5" r="1.7"/><circle cx="16.5" cy="28.2" r="1.7"/><circle cx="22" cy="26.5" r="1.7"/></g>';
+var WX_FOG = '<g stroke="#8a93a0" stroke-width="2.2" stroke-linecap="round"><path d="M7 25.5h18M10 29.2h12"/></g>';
+var WX_BOLT = '<path d="M17.5 16.5l-5 7.5h3.6L14 31l6.5-8.5h-3.6l3.4-5.5Z" fill="#ffcf5c"/>';
+function wxSvg(inner) {
+  return '<svg width="1em" height="1em" viewBox="0 0 32 32" ' +
+         'style="display:inline-block;vertical-align:-0.12em;" xmlns="http://www.w3.org/2000/svg">' + inner + '</svg>';
+}
+function iconForCode(code, isDay) {
+  var CLOUD = '#9fa8b2', STORM = '#7f8895';
+  if (code === 0)                  return wxSvg(isDay ? WX_SUN : WX_MOON);
+  if (code === 1 || code === 2)    return wxSvg((isDay ? WX_SUN_SM : WX_MOON_SM) + wxCloud(CLOUD, 1));
+  if (code === 3)                  return wxSvg(wxCloud(CLOUD, 1));
+  if (code >= 45 && code <= 48)    return wxSvg(wxCloud(CLOUD, -5) + WX_FOG);
+  if (code >= 51 && code <= 67)    return wxSvg(wxCloud(CLOUD, -4) + WX_DROPS);
+  if (code >= 71 && code <= 77)    return wxSvg(wxCloud(CLOUD, -4) + WX_SNOW);
+  if (code >= 80 && code <= 82)    return wxSvg((isDay ? WX_SUN_SM : WX_MOON_SM) + wxCloud(CLOUD, -4) + WX_DROPS);
+  if (code === 85 || code === 86)  return wxSvg((isDay ? WX_SUN_SM : WX_MOON_SM) + wxCloud(CLOUD, -4) + WX_SNOW);
+  if (code >= 95 && code <= 99)    return wxSvg(wxCloud(STORM, -4) + WX_BOLT);
+  return wxSvg(wxCloud(CLOUD, 1));
+}
+function tempColor(t) {
+  if (t < 0)  return '#5599ff';
+  if (t > 28) return '#ff7733';
+  return '#ffffff';
+}
+function el(id) { return document.getElementById(id); }
+
+
+function eventLabel(code) {
+  if (code === 45 || code === 48) return 'Fog';
+  if (code === 51 || code === 53 || code === 55) return 'Drizzle';
+  if (code === 61 || code === 63 || code === 65) return 'Rain';
+  if (code === 67) return 'Freezing rain';
+  if (code === 71 || code === 73 || code === 75 || code === 77) return 'Snow';
+  if (code === 80 || code === 81 || code === 82) return 'Showers';
+  if (code === 85 || code === 86) return 'Snow showers';
+  if (code === 95 || code === 96 || code === 99) return 'Storm';
+  return null;
+}
+
+function currentCategory(code) {
+  if (code === 45 || code === 48) return 'fog';
+  if (code >= 51 && code <= 55) return 'drizzle';
+  if (code === 61 || code === 63 || code === 65 || code === 67) return 'rain';
+  if (code >= 71 && code <= 77) return 'snow';
+  if (code >= 80 && code <= 82) return 'showers';
+  if (code === 85 || code === 86) return 'snow';
+  if (code >= 95 && code <= 99) return 'storm';
+  return 'clear';
+}
+
+function nextWeatherAlert(hourly, currentCode) {
+  var curCat = currentCategory(currentCode);
+  var precipAlert = null;
+  var clearAlert = null;
+  var slots = hourly || [];
+  for (var i = 0; i < Math.min(slots.length, 8); i++) {
+    var slot = slots[i];
+    var code = slot.weather_code || 0;
+    var label = eventLabel(code);
+    var slotCat = currentCategory(code);
+    var hourStr = i === 0 ? '< 1h' : i + 'h';
+    if (precipAlert === null && label !== null && slotCat !== curCat) {
+      if (slotCat === 'rain' || slotCat === 'drizzle' || slotCat === 'showers') {
+        if ((slot.precip_pct || 0) >= 40) {
+          precipAlert = label + ' in ' + hourStr;
+        }
+      } else {
+        precipAlert = label + ' in ' + hourStr;
+      }
+    }
+    if (clearAlert === null && curCat !== 'clear' && (code === 0 || code === 1)) {
+      clearAlert = 'Clearing in ' + hourStr;
+    }
+  }
+  return precipAlert || clearAlert || null;
+}
+
+function updateDashboard(d) {
+  var w   = d.weather;
+  var cur = w.current;
+  var tod = w.today;
+
+  el('temp').textContent = cur.temp + '°';
+  el('temp').style.color = tempColor(cur.temp);
+  el('icon').innerHTML = iconForCode(cur.weather_code || 0, cur.is_day !== false);
+  var condText = (cur.desc && cur.desc !== '—') ? cur.desc : '';
+  var alert = nextWeatherAlert(w.hourly, cur.weather_code || 0);
+  el('conditions').textContent = alert ? condText + '  ·  ' + alert : condText;
+  el('meta').innerHTML =
+    'Feels ' + cur.feels_like + '°  ·  Wind ' + (cur.wind_dir || '') + ' ' + cur.wind + ' km/h  ·  H ' + tod.high + '° / L ' + tod.low + '°  ·  Rain ' + tod.precip_pct + '%<br>' +
+    'UV ' + (cur.uv_label || '—') + '  ·  ' + (cur.pressure || '—') + ' hPa ' + (cur.pressure_trend || '') + '  ·  Humidity ' + cur.humidity + '%';
+  el('sun-times').innerHTML =
+    wxSvg(WX_SUN) + ' ' + (tod.sunrise || '—') + '   ' + wxSvg(WX_MOON) + ' ' + (tod.sunset || '—');
+  el('moon-svg').innerHTML    = d.moon_svg || '';
+  el('moon-name').textContent = d.moon_name || '';
+
+  // 5-day forecast
+  var fc = el('forecast');
+  fc.innerHTML = '';
+  (w.forecast || []).slice(0, 5).forEach(function(day) {
+    var card = document.createElement('div');
+    card.className = 'fc-card';
+    card.innerHTML =
+      '<div class="fc-day">'  + day.name + '</div>' +
+      '<div class="fc-icon">' + iconForCode(day.weather_code || 0, true) + '</div>' +
+      '<div class="fc-range">' + day.high + '° / ' + day.low + '°</div>' +
+      (day.precip_pct ? '<div class="fc-pct">' + day.precip_pct + '%</div>' : '');
+    fc.appendChild(card);
+  });
+
+  // 8-slot hourly
+  var hr = el('hourly');
+  hr.innerHTML = '';
+  (w.hourly || []).slice(0, 8).forEach(function(h) {
+    var cell = document.createElement('div');
+    cell.className = 'h-cell';
+    cell.innerHTML =
+      '<div class="h-label">' + h.label + '</div>' +
+      '<div class="h-icon">'  + iconForCode(h.weather_code || 0, h.is_day) + '</div>' +
+      '<div class="h-temp">'  + h.temp + '°</div>' +
+      (h.precip_pct ? '<div class="h-pct">' + h.precip_pct + '%</div>' : '');
+    hr.appendChild(cell);
+  });
+
+  // News
+  var newsList = Array.isArray(d.news) ? d.news : [];
+  if (newsList.length && JSON.stringify(newsList) !== JSON.stringify(newsHeadlines)) {
+    newsHeadlines = newsList;
+    newsPage = 0;
+    showNewsPage();
+  }
+  stocksData = d.stocks || [];
+
+  var staleEl = el('stale');
+  if (staleEl) {
+    var ageMin = d.stale_age || 0;
+    var ageStr = ageMin > 0 ? ageMin + 'm ago' : 'just now';
+    if (d.stale && ageMin >= 30) {
+      staleEl.textContent = '⚠ ' + ageStr;
+      staleEl.style.color = '#cc4444';
+    } else if (d.stale && ageMin >= 15) {
+      staleEl.textContent = '⚠ ' + ageStr;
+      staleEl.style.color = '#cc8833';
+    } else {
+      staleEl.textContent = 'Updated ' + ageStr;
+      staleEl.style.color = '#1e3a1e';
+    }
+  }
+}
+
+function refreshData() {
+  /* cache-buster: iOS 12 Safari caches fetch() GETs despite no-cache headers */
+  fetch('/data?_=' + Date.now())
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.rest) { location.reload(); return; }
+      updateDashboard(d);
+    })
+    .catch(function(e) { console.warn('fetch /data failed:', e); });
+}
+refreshData();
+setInterval(refreshData, 90000);
+
+var newsHeadlines = [];
+var newsPage = 0;
+var stocksData = [];
+
+function renderStocksSlide() {
+  var lbl = el('zone-news-label');
+  if (lbl) lbl.textContent = 'Markets';
+  var block = el('news-block');
+  if (!block) return;
+  block.innerHTML = '';
+  var grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(5,1fr);text-align:center;gap:6px;';
+  for (var i = 0; i < stocksData.length; i++) {
+    var s = stocksData[i];
+    var up = s.up !== false && (typeof s.change_pct !== 'number' || s.change_pct >= 0);
+    var bgColor = up ? '#0a2010' : '#200a0a';
+    var acColor = up ? '#4aaa77' : '#cc5555';
+    var cell = document.createElement('div');
+    cell.style.cssText = 'background:' + bgColor + ';border-radius:8px;padding:8px 4px;';
+    var lEl = document.createElement('div');
+    lEl.style.cssText = 'font-size:10px;color:#666;margin-bottom:2px;';
+    lEl.textContent = s.label;
+    var pEl = document.createElement('div');
+    pEl.style.cssText = 'font-size:15px;color:#ccc;';
+    pEl.textContent = s.price;
+    var pct = typeof s.change_pct === 'number' ? s.change_pct : 0;
+    var cEl = document.createElement('div');
+    cEl.style.cssText = 'font-size:11px;color:' + acColor + ';margin-top:2px;';
+    cEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+    var barWrap = document.createElement('div');
+    barWrap.style.cssText = 'margin:5px 6px 2px;height:3px;background:#1a1a1a;border-radius:2px;position:relative;';
+    var barFill = document.createElement('div');
+    var w52 = typeof s.w52_pct === 'number' ? Math.max(2, Math.min(98, s.w52_pct)) : 50;
+    barFill.style.cssText = 'position:absolute;left:0;top:0;height:3px;border-radius:2px;background:' + acColor + ';width:' + w52 + '%;';
+    barWrap.appendChild(barFill);
+    var barLbls = document.createElement('div');
+    barLbls.style.cssText = 'display:flex;justify-content:space-between;font-size:8px;color:#444;margin:1px 6px 0;';
+    barLbls.innerHTML = '<span>52L</span><span>52H</span>';
+    cell.appendChild(lEl); cell.appendChild(pEl); cell.appendChild(cEl);
+    cell.appendChild(barWrap); cell.appendChild(barLbls);
+    grid.appendChild(cell);
+  }
+  block.appendChild(grid);
+}
+
+function showNewsPage() {
+  var block = el('news-block');
+  if (!block) return;
+  block.innerHTML = '';
+  var totalNewsPages = Math.ceil(newsHeadlines.length / 3);
+  var stocksEnabled = stocksData.length > 0;
+  // With stocks: slots alternate news(even)/stocks(odd). cycleLen = totalNewsPages*2.
+  // Without stocks: slots are just news pages.
+  var isStocksSlot = stocksEnabled && (newsPage % 2 === 1);
+  if (isStocksSlot) {
+    renderStocksSlide();
+    return;
+  }
+  var lbl = el('zone-news-label');
+  if (lbl) lbl.textContent = 'News';
+  var newsIdx = stocksEnabled ? Math.floor(newsPage / 2) : newsPage;
+  var start = newsIdx * 3;
+  for (var i = 0; i < 3; i++) {
+    var item = newsHeadlines[start + i];
+    if (!item) continue;
+    var div = document.createElement('div');
+    div.className = 'news-item';
+    var src = '', txt = '';
+    if (typeof item === 'object') {
+      src = item.source || ''; txt = item.text || '';
+    } else {
+      var m = item.match(/^\[([^\]]+)\]\s*(.*)/);
+      if (m) { src = m[1]; txt = m[2]; } else { txt = item; }
+    }
+    var srcEl = document.createElement('span'); srcEl.className = 'news-src'; srcEl.textContent = src;
+    var txtEl = document.createElement('span'); txtEl.className = 'news-txt'; txtEl.textContent = txt;
+    div.appendChild(srcEl); div.appendChild(txtEl);
+    block.appendChild(div);
+  }
+}
+
+function advanceNews() {
+  if (!newsHeadlines.length) return;
+  var totalNewsPages = Math.ceil(newsHeadlines.length / 3);
+  var stocksEnabled = stocksData.length > 0;
+  var cycleLen = stocksEnabled ? totalNewsPages * 2 : totalNewsPages;
+  var block = el('news-block');
+  if (!block) return;
+  var nextPage = (newsPage + 1) % cycleLen;
+  var nextDuration;
+  var nextIsStocks = stocksEnabled && (nextPage % 2 === 1);
+  if (nextIsStocks) {
+    nextDuration = 10000;
+  } else {
+    var nextNewsIdx = stocksEnabled ? Math.floor(nextPage / 2) : nextPage;
+    var nextStart = nextNewsIdx * 3;
+    var maxLen = 0;
+    for (var j = 0; j < 3; j++) {
+      var itm = newsHeadlines[nextStart + j];
+      if (itm) {
+        var t = typeof itm === 'object' ? (itm.text || '') : itm;
+        if (t.length > maxLen) maxLen = t.length;
+      }
+    }
+    nextDuration = Math.max(14000, maxLen * 80);
+  }
+  block.style.opacity = '0';
+  setTimeout(function() {
+    newsPage = (newsPage + 1) % cycleLen;
+    showNewsPage();
+    block.style.opacity = '1';
+    setTimeout(advanceNews, nextDuration);
+  }, 500);
+}
+setTimeout(advanceNews, 14000);
+</script>
+</body>
+</html>
