@@ -22,7 +22,7 @@ from sleeper_dynasty_tracker import (
     LEAGUE_ID, SPORT, STATS_SEASON, PICK_SEASONS, TREND_LOOKBACK,
     BASE, get,
     fetch_players, fetch_season_stats, fetch_fantasycalc,
-    fetch_all_traded_picks, fetch_league_data,
+    fetch_all_traded_picks, fetch_league_data, derive_league_shape,
     compute_fantasy_pts, build_pos_ranks,
     SCORING_LABELS, DYNASTY_POSITIONS,
 )
@@ -48,52 +48,84 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-DRAFT_SELECTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "draft_selections.json")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def load_draft_selections():
-    """Load saved pick confirmations from disk. Returns {pick_label: rookie_name}."""
-    if os.path.exists(DRAFT_SELECTIONS_FILE):
+def _draft_selections_file(league_id):
+    return os.path.join(_APP_DIR, f"draft_selections_{league_id}.json")
+
+_LEGACY_DRAFT_FILE = os.path.join(_APP_DIR, "draft_selections.json")
+
+def load_draft_selections(league_id):
+    """Load saved pick confirmations for a league. Returns {pick_label: rookie_name}."""
+    path = _draft_selections_file(league_id)
+    if not os.path.exists(path) and league_id == LEAGUE_ID and os.path.exists(_LEGACY_DRAFT_FILE):
+        path = _LEGACY_DRAFT_FILE   # pre-multi-league file belongs to the original league
+    if os.path.exists(path):
         try:
-            with open(DRAFT_SELECTIONS_FILE) as f:
+            with open(path) as f:
                 return json.load(f)
         except Exception as e:
-            print(f"[WARNING] Could not load draft selections from {DRAFT_SELECTIONS_FILE}: {e}")
+            print(f"[WARNING] Could not load draft selections from {path}: {e}")
     return {}
 
-def save_draft_selections(selections):
-    """Persist {pick_label: rookie_name} to disk."""
-    with open(DRAFT_SELECTIONS_FILE, "w") as f:
+def save_draft_selections(league_id, selections):
+    """Persist {pick_label: rookie_name} for a league."""
+    with open(_draft_selections_file(league_id), "w") as f:
         json.dump(selections, f, indent=2)
 
-def clear_draft_selections():
-    if os.path.exists(DRAFT_SELECTIONS_FILE):
-        os.remove(DRAFT_SELECTIONS_FILE)
+def clear_draft_selections(league_id):
+    for path in (_draft_selections_file(league_id),
+                 _LEGACY_DRAFT_FILE if league_id == LEAGUE_ID else None):
+        if path and os.path.exists(path):
+            os.remove(path)
 
-MY_TEAM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "my_team.json")
+MY_TEAM_FILE = os.path.join(_APP_DIR, "my_team.json")
 
-def load_prefs():
-    """Load persisted app preferences ({'team': ..., 'value_source': ...})."""
+def _read_prefs_file():
+    """Read the raw prefs file, migrating the legacy flat format
+    ({'team','value_source'} at top level) into a per-league structure."""
+    prefs = {}
     if os.path.exists(MY_TEAM_FILE):
         try:
             with open(MY_TEAM_FILE) as f:
-                return json.load(f) or {}
+                prefs = json.load(f) or {}
         except Exception as e:
             print(f"[WARNING] Could not load prefs from {MY_TEAM_FILE}: {e}")
-    return {}
+    if "team" in prefs or "value_source" in prefs:   # legacy flat format → original league
+        legacy = {k: prefs.pop(k) for k in ("team", "value_source") if k in prefs}
+        lp = prefs.setdefault("leagues", {}).setdefault(LEAGUE_ID, {})
+        for k, v in legacy.items():
+            lp.setdefault(k, v)
+    return prefs
 
-def save_prefs(**updates):
-    """Merge updates into the persisted preferences file. None values are removed."""
-    prefs = load_prefs()
-    for k, v in updates.items():
-        if v is None:
-            prefs.pop(k, None)
-        else:
-            prefs[k] = v
+def _write_prefs_file(prefs):
     if prefs:
         with open(MY_TEAM_FILE, "w") as f:
             json.dump(prefs, f, indent=2)
     elif os.path.exists(MY_TEAM_FILE):
         os.remove(MY_TEAM_FILE)
+
+def load_league_prefs(league_id):
+    """Per-league preferences ({'team': ..., 'value_source': ...})."""
+    return _read_prefs_file().get("leagues", {}).get(league_id, {})
+
+def save_league_prefs(league_id, **updates):
+    """Merge updates into one league's preferences. None values are removed."""
+    prefs = _read_prefs_file()
+    lp = prefs.setdefault("leagues", {}).setdefault(league_id, {})
+    for k, v in updates.items():
+        if v is None:
+            lp.pop(k, None)
+        else:
+            lp[k] = v
+    if not lp:
+        prefs["leagues"].pop(league_id, None)
+    _write_prefs_file(prefs)
+
+def save_last_league(league_id):
+    prefs = _read_prefs_file()
+    prefs["last_league_id"] = league_id
+    _write_prefs_file(prefs)
 
 FAVORITES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favorites.json")
 
@@ -476,11 +508,13 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
 # ── Data loading (cached) ─────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_all_data():
-    league, rosters, users, traded_ownership, drafts, slot_map = fetch_league_data(LEAGUE_ID)
+def load_all_data(league_id):
+    league, rosters, users, traded_ownership, drafts, slot_map = fetch_league_data(league_id)
     players = fetch_players()
     raw_stats = fetch_season_stats()
-    fc_values, fc_rookies, fc_picks = fetch_fantasycalc()
+    # FC values fetched for THIS league's shape (QB count, PPR, team count)
+    num_qbs, ppr, num_teams = derive_league_shape(league)
+    fc_values, fc_rookies, fc_picks = fetch_fantasycalc(num_qbs, ppr, num_teams)
     scoring = league.get("scoring_settings") or {}
 
     player_pts = {}
@@ -1136,12 +1170,46 @@ def normalize_dim(values_dict):
 
 # ── App layout ────────────────────────────────────────────────────────────────
 
+# ── League selection gate (multi-league) ─────────────────────────────────────
+if "league_id" not in st.session_state:
+    # Bootstrap: last-used league from prefs, falling back to the built-in default
+    st.session_state.league_id = _read_prefs_file().get("last_league_id") or LEAGUE_ID or None
+
+if not st.session_state.get("league_id"):
+    st.title("🏈 Dynasty Dashboard")
+    st.caption(
+        "Enter your **Sleeper league ID** to get started. You can find it in your league's URL: "
+        "`sleeper.com/leagues/<league_id>/...`"
+    )
+    _lid_in = st.text_input("Sleeper League ID", key="landing_lid",
+                            placeholder="e.g. 1322995024962543616")
+    if st.button("Load League", type="primary", key="landing_go"):
+        _lid_clean = (_lid_in or "").strip()
+        _lg_check = None
+        if _lid_clean.isdigit():
+            try:
+                _lg_check = get(f"{BASE}/league/{_lid_clean}")
+            except Exception:
+                _lg_check = None
+        if _lg_check and _lg_check.get("league_id"):
+            st.session_state.league_id = _lg_check["league_id"]
+            save_last_league(_lg_check["league_id"])
+            st.rerun()
+        else:
+            st.error("Could not load that league — check the ID and try again.")
+    st.stop()
+
+league_id = st.session_state.league_id
+
 with st.spinner("Loading league data..."):
     try:
         (league, rosters, users, traded_ownership, drafts, slot_map,
-         players, player_pts, pos_ranks, fc_values, fc_rookies, fc_picks, scoring) = load_all_data()
+         players, player_pts, pos_ranks, fc_values, fc_rookies, fc_picks, scoring) = load_all_data(league_id)
     except Exception as e:
-        st.error(f"Failed to load data: {e}")
+        st.error(f"Failed to load league {league_id}: {e}")
+        if st.button("Try a different league", key="landing_retry"):
+            st.session_state.league_id = None
+            st.rerun()
         st.stop()
 
 with st.spinner("Loading value sources (DN · KTC · DP)..."):
@@ -1167,34 +1235,39 @@ _sb_team_names = sorted({
 })
 
 with st.sidebar:
-    st.title("🏈 Kingston Dynasty")
-    st.caption("Kingston Dynasty League")
+    st.title(f"🏈 {league.get('name', 'Dynasty Dashboard')}")
+    st.caption(f"Sleeper · {league.get('season', '')} · {league.get('total_rosters', '?')} teams")
 
-    # My Team — persisted across sessions
+    # My Team + Value Source — persisted per league; re-seeded when league changes
     _team_opts = ["—"] + _sb_team_names
-    if "_my_team_loaded" not in st.session_state:
-        st.session_state._my_team_loaded = True
-        _prefs = load_prefs()
+    if st.session_state.get("_prefs_seeded_for") != league_id:
+        st.session_state._prefs_seeded_for = league_id
+        _prefs = load_league_prefs(league_id)
         _saved_team = _prefs.get("team")
         st.session_state.my_team_pick = _saved_team if _saved_team in _team_opts else "—"
         _saved_vs = _prefs.get("value_source")
         _vs_opts_boot = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
         st.session_state.value_source = _saved_vs if _saved_vs in _vs_opts_boot else "FC Dynasty"
+        # New league context → page-level sticky team choices no longer apply
+        for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
+            st.session_state.pop(_sk, None)
+        st.session_state.pop("_last_my_team", None)
+        st.session_state.pop("_last_value_source", None)
     _my_team_sel = st.selectbox("My Team", _team_opts, key="my_team_pick")
     my_team = None if _my_team_sel == "—" else _my_team_sel
     if st.session_state.get("_last_my_team", "__unset__") != my_team:
-        save_prefs(team=my_team)
+        save_league_prefs(league_id, team=my_team)
         # Identity changed → reset page-level sticky team choices so the
         # new team becomes the default everywhere on next visit
         for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
             st.session_state.pop(_sk, None)
         st.session_state._last_my_team = my_team
 
-    # Value source — drives every Value/Rank column; persisted across sessions
+    # Value source — drives every Value/Rank column; persisted per league
     _vs_options_sb = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
     st.selectbox("Value Source", _vs_options_sb, key="value_source")
     if st.session_state.get("_last_value_source") != st.session_state.value_source:
-        save_prefs(value_source=st.session_state.value_source)
+        save_league_prefs(league_id, value_source=st.session_state.value_source)
         st.session_state._last_value_source = st.session_state.value_source
 
 value_source = st.session_state["value_source"]
@@ -1219,7 +1292,7 @@ if _theme == "Dark":
 # "System Default" — no injection, let Streamlit handle it
 
 # Trade/DEF analysis — cached in session_state; only recomputes when value_source changes or Refresh is clicked
-_trade_cache_key = f"trade_data_{value_source}"
+_trade_cache_key = f"trade_data_{league_id}_{value_source}"
 if st.session_state.get("_trade_cache_key") != _trade_cache_key:
     team_data, league_avgs, all_players_by_pos = build_trade_analysis(
         rosters, users, players, fc_values, fc_picks, slot_map, traded_ownership, drafts,
@@ -1273,6 +1346,9 @@ with st.sidebar:
         for _k in ["_trade_cache_key", "_team_data", "_league_avgs",
                    "_all_players_by_pos", "_team_name_to_rid", "_def_analysis", "_league_def_avg"]:
             st.session_state.pop(_k, None)
+        st.rerun()
+    if st.button("🔁 Switch League", use_container_width=True):
+        st.session_state.league_id = None
         st.rerun()
 
 # ── Page: League Overview ─────────────────────────────────────────────────────
@@ -2793,9 +2869,10 @@ elif page == "🔄 Trade Analyzer":
 elif page == "🏟️ Draft Room":
     curr_year = str(datetime.now().year)
 
-    # ── Session state + persistence ───────────────────────────────────────────
-    if "draft_confirmed" not in st.session_state:
-        st.session_state.draft_confirmed = load_draft_selections()
+    # ── Session state + persistence (per league) ──────────────────────────────
+    if st.session_state.get("_draft_confirmed_league") != league_id:
+        st.session_state.draft_confirmed = load_draft_selections(league_id)
+        st.session_state._draft_confirmed_league = league_id
 
     confirmed    = st.session_state.draft_confirmed   # {pick_label: rookie_name}
     rookie_names = sorted([r["name"] for r in fc_rookies if r.get("name")])
@@ -3012,12 +3089,12 @@ elif page == "🏟️ Draft Room":
             if row.get("Pick Made") and row.get("Rookie Selected"):
                 new_confirmed[row["Pick"]] = row["Rookie Selected"]
         st.session_state.draft_confirmed = new_confirmed
-        save_draft_selections(new_confirmed)
+        save_draft_selections(league_id, new_confirmed)
         st.rerun()
 
     if btn_c2.button("🗑️ Clear All", key="dr_clear", use_container_width=True):
         st.session_state.draft_confirmed = {}
-        clear_draft_selections()
+        clear_draft_selections(league_id)
         st.rerun()
 
     st.caption(f"{len(confirmed)} confirmed · {len(df_board) - len(confirmed)} estimated · auto-saved to draft_selections.json")

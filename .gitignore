@@ -5,6 +5,7 @@ sleeper_stats_cache*.json
 
 # User data / output
 draft_selections.json
+draft_selections_*.json
 my_team.json
 *.xlsx
 

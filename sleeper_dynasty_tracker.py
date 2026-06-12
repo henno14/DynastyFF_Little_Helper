@@ -113,16 +113,19 @@ def fetch_season_stats():
         json.dump(data, f)
     return data
 
-def fetch_fantasycalc():
-    """Fetch dynasty AND redraft values from FantasyCalc (Superflex, half-PPR, 12 teams).
+def fetch_fantasycalc(num_qbs=2, ppr=0.5, num_teams=12):
+    """Fetch dynasty AND redraft values from FantasyCalc for the given league shape.
+    Defaults: Superflex (2 QB), half-PPR, 12 teams. Cache files are keyed by the
+    parameters so different leagues don't share stale values.
     Returns:
       fc_values  : {sleeper_id: {value, overallRank, positionRank, trend30Day, tier,
                                  redraftValue, redraftRank, redraftPositionRank}}
       fc_rookies : list of rookie prospect entries (maybeYoe == 0, position != PICK)
       fc_picks   : {pick_name: value}  e.g. {"2026 Pick 1.05": 3519}
     """
-    FC_DYN_CACHE    = KTC_CACHE.replace(".json", "_raw.json")
-    FC_REDRAFT_CACHE = KTC_CACHE.replace(".json", "_redraft_raw.json")
+    _cfg_key = f"{num_qbs}qb_{ppr}ppr_{num_teams}tm"
+    FC_DYN_CACHE     = KTC_CACHE.replace(".json", f"_raw_{_cfg_key}.json")
+    FC_REDRAFT_CACHE = KTC_CACHE.replace(".json", f"_redraft_raw_{_cfg_key}.json")
 
     # ── Dynasty data ──────────────────────────────────────────────────────────
     raw = None
@@ -134,8 +137,8 @@ def fetch_fantasycalc():
                 raw = json.load(f)
 
     if raw is None:
-        print("  Downloading FantasyCalc dynasty values (Superflex, half-PPR, 12 teams)...")
-        raw = get("https://api.fantasycalc.com/values/current?isDynasty=true&numQbs=2&ppr=0.5&numTeams=12")
+        print(f"  Downloading FantasyCalc dynasty values ({num_qbs}QB, {ppr}PPR, {num_teams} teams)...")
+        raw = get(f"https://api.fantasycalc.com/values/current?isDynasty=true&numQbs={num_qbs}&ppr={ppr}&numTeams={num_teams}")
         with open(FC_DYN_CACHE, "w") as f:
             json.dump(raw, f)
 
@@ -149,9 +152,9 @@ def fetch_fantasycalc():
                 raw_redraft = json.load(f)
 
     if raw_redraft is None:
-        print("  Downloading FantasyCalc redraft values (Superflex, half-PPR, 12 teams)...")
+        print(f"  Downloading FantasyCalc redraft values ({num_qbs}QB, {ppr}PPR, {num_teams} teams)...")
         try:
-            raw_redraft = get("https://api.fantasycalc.com/values/current?isDynasty=false&numQbs=2&ppr=0.5&numTeams=12")
+            raw_redraft = get(f"https://api.fantasycalc.com/values/current?isDynasty=false&numQbs={num_qbs}&ppr={ppr}&numTeams={num_teams}")
             with open(FC_REDRAFT_CACHE, "w") as f:
                 json.dump(raw_redraft, f)
         except Exception as e:
@@ -293,6 +296,20 @@ def fetch_all_traded_picks(league_id):
             ownership[key] = entries[0][1]["owner_id"]
 
     return ownership
+
+def derive_league_shape(league):
+    """Derive (num_qbs, ppr, num_teams) for FantasyCalc from a Sleeper league object.
+    Snaps to the parameter values FantasyCalc actually supports."""
+    rp  = league.get("roster_positions") or []
+    num_qbs = 2 if ("SUPER_FLEX" in rp or rp.count("QB") >= 2) else 1
+    raw_ppr = (league.get("scoring_settings") or {}).get("rec", 0.5)
+    if not isinstance(raw_ppr, (int, float)):
+        raw_ppr = 0.5
+    ppr = min([0, 0.5, 1], key=lambda x: abs(x - raw_ppr))
+    raw_teams = league.get("total_rosters") or 12
+    num_teams = min([8, 10, 12, 14], key=lambda x: abs(x - raw_teams))
+    return num_qbs, ppr, num_teams
+
 
 def fetch_league_data(league_id):
     print("  Fetching league info...")
