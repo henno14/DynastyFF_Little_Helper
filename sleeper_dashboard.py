@@ -71,21 +71,27 @@ def clear_draft_selections():
 
 MY_TEAM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "my_team.json")
 
-def load_my_team():
-    """Load the persisted 'My Team' name. Returns team name str or None."""
+def load_prefs():
+    """Load persisted app preferences ({'team': ..., 'value_source': ...})."""
     if os.path.exists(MY_TEAM_FILE):
         try:
             with open(MY_TEAM_FILE) as f:
-                return json.load(f).get("team") or None
+                return json.load(f) or {}
         except Exception as e:
-            print(f"[WARNING] Could not load my_team from {MY_TEAM_FILE}: {e}")
-    return None
+            print(f"[WARNING] Could not load prefs from {MY_TEAM_FILE}: {e}")
+    return {}
 
-def save_my_team(team_name):
-    """Persist the 'My Team' name (or remove the file when cleared)."""
-    if team_name:
+def save_prefs(**updates):
+    """Merge updates into the persisted preferences file. None values are removed."""
+    prefs = load_prefs()
+    for k, v in updates.items():
+        if v is None:
+            prefs.pop(k, None)
+        else:
+            prefs[k] = v
+    if prefs:
         with open(MY_TEAM_FILE, "w") as f:
-            json.dump({"team": team_name}, f, indent=2)
+            json.dump(prefs, f, indent=2)
     elif os.path.exists(MY_TEAM_FILE):
         os.remove(MY_TEAM_FILE)
 
@@ -1098,8 +1104,48 @@ with st.spinner("Loading value sources (DN · KTC · DP)..."):
     val_maps     = {"dn": dn_map, "ktc": ktc_map, "dp": dp_map}
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
-st.session_state.setdefault("value_source", "FC Dynasty")
 st.session_state.setdefault("app_theme", "System Default")
+
+# ── Sidebar: identity + value source (rendered early — value_source drives the
+#    data pipeline below; team names derive straight from rosters/users) ───────
+_user_map_sb = {u["user_id"]: u for u in users}
+_sb_team_names = sorted({
+    (( _user_map_sb.get(r.get("owner_id") or "", {}) ).get("metadata") or {}).get("team_name")
+    or _user_map_sb.get(r.get("owner_id") or "", {}).get("display_name")
+    or f"Team {r['roster_id']}"
+    for r in rosters
+})
+
+with st.sidebar:
+    st.title("🏈 Kingston Dynasty")
+    st.caption("Kingston Dynasty League")
+
+    # My Team — persisted across sessions
+    _team_opts = ["—"] + _sb_team_names
+    if "_my_team_loaded" not in st.session_state:
+        st.session_state._my_team_loaded = True
+        _prefs = load_prefs()
+        _saved_team = _prefs.get("team")
+        st.session_state.my_team_pick = _saved_team if _saved_team in _team_opts else "—"
+        _saved_vs = _prefs.get("value_source")
+        _vs_opts_boot = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+        st.session_state.value_source = _saved_vs if _saved_vs in _vs_opts_boot else "FC Dynasty"
+    _my_team_sel = st.selectbox("My Team", _team_opts, key="my_team_pick")
+    my_team = None if _my_team_sel == "—" else _my_team_sel
+    if st.session_state.get("_last_my_team", "__unset__") != my_team:
+        save_prefs(team=my_team)
+        # Identity changed → reset page-level sticky team choices so the
+        # new team becomes the default everywhere on next visit
+        for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
+            st.session_state.pop(_sk, None)
+        st.session_state._last_my_team = my_team
+
+    # Value source — drives every Value/Rank column; persisted across sessions
+    _vs_options_sb = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+    st.selectbox("Value Source", _vs_options_sb, key="value_source")
+    if st.session_state.get("_last_value_source") != st.session_state.value_source:
+        save_prefs(value_source=st.session_state.value_source)
+        st.session_state._last_value_source = st.session_state.value_source
 
 value_source = st.session_state["value_source"]
 val_col      = value_col_label(value_source)   # dynamic column header e.g. "FC D Value"
@@ -1148,25 +1194,6 @@ else:
 
 # ── Sidebar navigation ────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("🏈 Kingston Dynasty")
-    st.caption("Kingston Dynasty League")
-
-    # ── My Team — global identity, persisted across sessions ─────────────────
-    _team_opts = ["—"] + sorted(team_name_to_rid.keys())
-    if "_my_team_loaded" not in st.session_state:
-        st.session_state._my_team_loaded = True
-        _saved_team = load_my_team()
-        st.session_state.my_team_pick = _saved_team if _saved_team in _team_opts else "—"
-    _my_team_sel = st.selectbox("My Team", _team_opts, key="my_team_pick")
-    my_team = None if _my_team_sel == "—" else _my_team_sel
-    if st.session_state.get("_last_my_team", "__unset__") != my_team:
-        save_my_team(my_team)
-        # Identity changed → reset page-level sticky team choices so the
-        # new team becomes the default everywhere on next visit
-        for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
-            st.session_state.pop(_sk, None)
-        st.session_state._last_my_team = my_team
-
     st.divider()
     page = st.radio("", [
         "🏠 League Overview",
@@ -2012,15 +2039,8 @@ elif page == "⚙️ Settings":
             "Controls which data source drives the **Value** and **Rank** columns "
             "across Rosters, Free Agents, and Trade Analyzer. Picks always use FC values."
         )
-        _vs_options = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
-        _vs_sel = st.radio(
-            "value_source_setting",
-            _vs_options,
-            index=_vs_options.index(st.session_state.get("value_source", "FC Dynasty"))
-                  if st.session_state.get("value_source", "FC Dynasty") in _vs_options else 0,
-            label_visibility="collapsed",
-        )
-        st.session_state["value_source"] = _vs_sel
+        _vs_sel = st.session_state.get("value_source", "FC Dynasty")
+        st.success(f"Current source: **{_vs_sel}** — change it anytime from the **sidebar** (under My Team).")
         source_info = {
             "FC Dynasty":    "FantasyCalc dynasty SuperFlex value. Normalised to 0–10K. Default.",
             "DN Dynasty":    "DynastyNerds dynasty SuperFlex — ranker consensus (~330 players). 0–10K.",
@@ -2907,8 +2927,16 @@ elif page == "🏟️ Draft Room":
     # ── Draft board ───────────────────────────────────────────────────────────
     st.subheader(f"{curr_year} Draft Board")
 
+    # Highlight My Team's picks (Styler applies to the non-editable columns)
+    _board_data = df_board
+    if my_team and (df_board["Team"] == f"⭐ {my_team}").any():
+        _dr_hl = "background-color: rgba(255, 196, 0, 0.18)"
+        _board_data = df_board.style.apply(
+            lambda row: [_dr_hl if row["Team"] == f"⭐ {my_team}" else "" for _ in row], axis=1
+        )
+
     edited = st.data_editor(
-        df_board,
+        _board_data,
         use_container_width=True,
         hide_index=True,
         key="draft_board_editor",
