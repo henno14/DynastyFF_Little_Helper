@@ -1541,6 +1541,14 @@ elif page == "📋 Rosters":
         val_col: COL_CFG["Value"],
     }
 
+    # Default sort: position order (QB→RB→WR→TE→…) then overall Rank (best first, unranked last)
+    _r_pos_order = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "K": 4, "DEF": 5, "DL": 6, "LB": 7, "DB": 8}
+    dv = dv.sort_values(
+        by=["Pos", "Rank"],
+        key=lambda col: col.map(_r_pos_order).fillna(99) if col.name == "Pos"
+                        else pd.to_numeric(col, errors="coerce").fillna(999999),
+    ).reset_index(drop=True)
+
     st.dataframe(
         dv[display_cols], use_container_width=True, hide_index=True,
         column_config=col_cfg,
