@@ -1656,11 +1656,23 @@ elif page == "🎯 Draft Picks":
         key=lambda col: col.apply(_slot_key) if col.name == "Pick" else col,
     ).reset_index(drop=True)
 
-    st.dataframe(
-        dv, use_container_width=True, hide_index=True,
-        column_config={"Value": COL_CFG["Value"]},
-    )
-    st.caption(f"{len(dv)} picks shown · 🟢 Surplus = pick-rich owner · 🔴 Deficit = pick-poor owner")
+    # Highlight My Team's picks (semi-transparent gold works on dark + light themes)
+    if my_team and (dv["Team"] == my_team).any():
+        _hl = "background-color: rgba(255, 196, 0, 0.18)"
+        _styled = dv.style.apply(
+            lambda row: [_hl if row["Team"] == my_team else "" for _ in row], axis=1
+        )
+        st.dataframe(
+            _styled, use_container_width=True, hide_index=True,
+            column_config={"Value": COL_CFG["Value"]},
+        )
+    else:
+        st.dataframe(
+            dv, use_container_width=True, hide_index=True,
+            column_config={"Value": COL_CFG["Value"]},
+        )
+    _hl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv["Team"] == my_team).any() else ""
+    st.caption(f"{len(dv)} picks shown · 🟢 Surplus = pick-rich owner · 🔴 Deficit = pick-poor owner{_hl_note}")
 
 # ── Page: Free Agents ────────────────────────────────────────────────────────
 elif page == "🔍 Free Agents":
