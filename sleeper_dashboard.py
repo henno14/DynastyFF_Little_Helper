@@ -1271,12 +1271,15 @@ if page == "🏠 League Overview":
     )
 
     for i, row in enumerate(_pr_rows):
-        _bg  = "#16191f" if i % 2 == 0 else "#11141a"
+        _is_mine = my_team and row["team"] == my_team
+        _bg  = "rgba(255,196,0,0.12)" if _is_mine else ("#16191f" if i % 2 == 0 else "#11141a")
         _sc  = row["score"]
         _bc  = "#4ade80" if _sc >= 60 else ("#fbbf24" if _sc >= 40 else "#f87171")
-        _tbl_html += f'<tr style="background:{_bg};border-bottom:1px solid #1e2130">'
+        _row_border = "border-left:3px solid #ffc400;" if _is_mine else ""
+        _star = "⭐ " if _is_mine else ""
+        _tbl_html += f'<tr style="background:{_bg};{_row_border}border-bottom:1px solid #1e2130">'
         _tbl_html += (f'<td style="padding:10px 14px;font-weight:500;color:#e0e0e0">'
-                      f'<span style="color:#555;margin-right:8px">{i+1}</span>{row["team"]}</td>')
+                      f'<span style="color:#555;margin-right:8px">{i+1}</span>{_star}{row["team"]}</td>')
         # Always show all 6 position badges — greyed out if excluded from score
         for _dim, _excl in [("QB",False),("RB",False),("WR",False),("TE",False),
                              ("Picks",_excl_picks),("DEF",_excl_def)]:
@@ -1318,7 +1321,13 @@ if page == "🏠 League Overview":
         rid_to_name = {rid: td["name"] for rid, td in team_data.items()}
         all_team_names_sorted = sorted(rid_to_name.values())
 
-        default_sel = [all_team_names_sorted[0]] if all_team_names_sorted else []
+        default_sel = st.session_state.get("_sticky_radar_sel")
+        if default_sel is None:   # no choice this session → default to My Team
+            if my_team in all_team_names_sorted:
+                default_sel = [my_team]
+            else:
+                default_sel = [all_team_names_sorted[0]] if all_team_names_sorted else []
+        default_sel = [t for t in default_sel if t in all_team_names_sorted]
         selected_teams = st.multiselect(
             "Highlight teams (1–3)",
             options=all_team_names_sorted,
@@ -1326,6 +1335,7 @@ if page == "🏠 League Overview":
             max_selections=3,
             key="radar_sel",
         )
+        st.session_state._sticky_radar_sel = selected_teams
 
         HIGHLIGHT_COLORS = ["#2196F3", "#F44336", "#4CAF50"]
         _chart_template = "plotly_dark" if _theme == "Dark" else "plotly_white"
@@ -1398,12 +1408,20 @@ if page == "🏠 League Overview":
                 sum(p["value"] for p in team_data[rid]["pos_players"].get(pos, []))
                 for rid in sorted_rids
             ]
+            _seg_ranks = []
+            for rid in sorted_rids:
+                _rk = team_data[rid].get("pos_league_rank", {}).get(pos)
+                _seg_ranks.append(f"#{_rk}" if _rk else "")
             fig_bar.add_trace(go.Bar(
                 name=pos,
                 y=team_names_bar,
                 x=values,
                 orientation="h",
                 marker_color=color,
+                text=_seg_ranks,
+                textposition="inside",
+                insidetextanchor="middle",
+                textfont=dict(size=11, color="white"),
             ))
 
         fig_bar.update_layout(
@@ -1413,8 +1431,11 @@ if page == "🏠 League Overview":
             yaxis_title="",
             margin=dict(t=20, b=40, l=160),
             template=_chart_template,
+            uniformtext_minsize=9,
+            uniformtext_mode="show",
         )
         st.plotly_chart(fig_bar, use_container_width=True)
+        st.caption("#N inside a segment = that team's league rank at the position (by avg value).")
 
     # ── Chart C: Rebuild vs Contend Scatter ───────────────────────────────────
     with st.container():
