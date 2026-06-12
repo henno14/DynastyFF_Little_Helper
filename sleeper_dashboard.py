@@ -846,11 +846,16 @@ def build_trade_analysis(rosters, users, players, fc_values, fc_picks, slot_map,
         pick_vals = [p["value"] for p in team_picks]
         team_data[rid]["pos_avgs"]["PICK"] = sum(pick_vals) / len(pick_vals) if pick_vals else None
 
-    # ── League-wide averages (players + picks) ────────────────────────────────
-    league_avgs = {}
+    # ── League-wide averages + spreads (players + picks) ─────────────────────
+    # Spread (best team avg − worst team avg) is used to normalise value gaps
+    # in need/surplus scores so cheap positions (TE) and expensive ones (WR)
+    # are judged on the same scale — %-of-average inflates gaps at cheap positions.
+    league_avgs    = {}
+    league_spreads = {}
     for dim in ANALYSIS_DIMENSIONS:
         all_vals = [td["pos_avgs"][dim] for td in team_data.values() if td["pos_avgs"].get(dim) is not None]
-        league_avgs[dim] = sum(all_vals) / len(all_vals) if all_vals else None
+        league_avgs[dim]    = sum(all_vals) / len(all_vals) if all_vals else None
+        league_spreads[dim] = (max(all_vals) - min(all_vals)) or 1 if all_vals else None
 
     # ── Relative strength per team ─────────────────────────────────────────────
     for rid, td in team_data.items():
@@ -887,7 +892,10 @@ def build_trade_analysis(rosters, users, players, fc_values, fc_picks, slot_map,
         for dim in SKILL_POSITIONS:  # PICK excluded — can't "need" picks as a position
             rank    = td.get("pos_league_rank", {}).get(dim)
             rel     = td["relative"].get(dim)
-            if rank is None or rel is None:
+            _avg    = td["pos_avgs"].get(dim)
+            _lg_avg = league_avgs.get(dim)
+            _spread = league_spreads.get(dim)
+            if rank is None or rel is None or _avg is None or _lg_avg is None or not _spread:
                 continue
 
             # ── Depth component ───────────────────────────────────────────────
@@ -905,8 +913,11 @@ def build_trade_analysis(rosters, users, players, fc_values, fc_picks, slot_map,
             depth_scores[dim] = depth_need
 
             rank_component        = (rank - 1) / max(n_teams - 1, 1)   # 0.0 best → 1.0 worst
-            need_val_component    = max(0.0, -rel) / 100                # 0 if above avg, grows with deficit
-            surplus_val_component = max(0.0,  rel) / 100                # 0 if below avg, grows with surplus
+            # Value gap normalised by the league spread at this position, NOT by the
+            # league average — a %-of-average gap systematically over-states need at
+            # cheap positions (e.g. TE) and under-states it at expensive ones (WR).
+            need_val_component    = max(0.0, _lg_avg - _avg) / _spread  # 0 if above avg, →1 at league-worst
+            surplus_val_component = max(0.0, _avg - _lg_avg) / _spread  # 0 if below avg, →1 at league-best
 
             need_scores[dim]    = (rank_component * 0.4 + need_val_component    * 0.4 + depth_need         * 0.2) * 100
             surplus_scores[dim] = ((1 - rank_component) * 0.4 + surplus_val_component * 0.4 + (1 - depth_need) * 0.2) * 100
@@ -2109,18 +2120,24 @@ elif page == "👥 Players":
     if pl_srch:     pl_mask &= df_pl["Player"].str.contains(pl_srch, case=False, na=False)
     dv_pl = df_pl[pl_mask].sort_values("FC D Value", ascending=False, na_position="last")
 
-    st.dataframe(
-        dv_pl, use_container_width=True, hide_index=True,
-        column_config={
-            "FC D Value":          st.column_config.NumberColumn(format="%d"),
-            "DN Value":            st.column_config.NumberColumn(format="%d"),
-            "KTC Value":           st.column_config.NumberColumn(format="%d"),
-            "DP Value":            st.column_config.NumberColumn(format="%d"),
-            f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
-            "Pos Rank":            COL_CFG["Rank"],
-        },
-    )
-    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale")
+    _pl_col_cfg = {
+        "FC D Value":          st.column_config.NumberColumn(format="%d"),
+        "DN Value":            st.column_config.NumberColumn(format="%d"),
+        "KTC Value":           st.column_config.NumberColumn(format="%d"),
+        "DP Value":            st.column_config.NumberColumn(format="%d"),
+        f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
+        "Pos Rank":            COL_CFG["Rank"],
+    }
+    if my_team and (dv_pl["Owner"] == my_team).any():
+        _pl_hl = "background-color: rgba(255, 196, 0, 0.18)"
+        _pl_styled = dv_pl.style.apply(
+            lambda row: [_pl_hl if row["Owner"] == my_team else "" for _ in row], axis=1
+        )
+        st.dataframe(_pl_styled, use_container_width=True, hide_index=True, column_config=_pl_col_cfg)
+    else:
+        st.dataframe(dv_pl, use_container_width=True, hide_index=True, column_config=_pl_col_cfg)
+    _pl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv_pl["Owner"] == my_team).any() else ""
+    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale{_pl_note}")
 
 # ── Page: Trending ───────────────────────────────────────────────────────────
 elif page == "📈 Trending":
@@ -2148,15 +2165,22 @@ elif page == "📈 Trending":
     if tr_srch:                     mask &= df_tr["Player"].str.contains(tr_srch, case=False, na=False)
     dv = df_tr[mask]
 
-    st.dataframe(
-        dv, use_container_width=True, hide_index=True,
-        column_config={
-            val_col:               COL_CFG["Value"],
-            "Rank":                COL_CFG["Rank"],
-            f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
-        },
-    )
-    st.caption(f"Top adds + drops across all Sleeper leagues (last {TREND_LOOKBACK}h) · {len(dv)} shown · Value source: **{value_source}**")
+    _tr_col_cfg = {
+        val_col:               COL_CFG["Value"],
+        "Rank":                COL_CFG["Rank"],
+        f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
+    }
+    if my_team and "Dynasty Team" in dv.columns and (dv["Dynasty Team"] == my_team).any():
+        _tr_hl = "background-color: rgba(255, 196, 0, 0.18)"
+        _tr_styled = dv.style.apply(
+            lambda row: [_tr_hl if row["Dynasty Team"] == my_team else "" for _ in row], axis=1
+        )
+        st.dataframe(_tr_styled, use_container_width=True, hide_index=True, column_config=_tr_col_cfg)
+        _tr_note = f" · ⭐ highlighted = {my_team}"
+    else:
+        st.dataframe(dv, use_container_width=True, hide_index=True, column_config=_tr_col_cfg)
+        _tr_note = ""
+    st.caption(f"Top adds + drops across all Sleeper leagues (last {TREND_LOOKBACK}h) · {len(dv)} shown · Value source: **{value_source}**{_tr_note}")
 
 # ── Page: Trade Analyzer ─────────────────────────────────────────────────────
 elif page == "🔄 Trade Analyzer":
