@@ -69,6 +69,26 @@ def clear_draft_selections():
     if os.path.exists(DRAFT_SELECTIONS_FILE):
         os.remove(DRAFT_SELECTIONS_FILE)
 
+MY_TEAM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "my_team.json")
+
+def load_my_team():
+    """Load the persisted 'My Team' name. Returns team name str or None."""
+    if os.path.exists(MY_TEAM_FILE):
+        try:
+            with open(MY_TEAM_FILE) as f:
+                return json.load(f).get("team") or None
+        except Exception as e:
+            print(f"[WARNING] Could not load my_team from {MY_TEAM_FILE}: {e}")
+    return None
+
+def save_my_team(team_name):
+    """Persist the 'My Team' name (or remove the file when cleared)."""
+    if team_name:
+        with open(MY_TEAM_FILE, "w") as f:
+            json.dump({"team": team_name}, f, indent=2)
+    elif os.path.exists(MY_TEAM_FILE):
+        os.remove(MY_TEAM_FILE)
+
 def player_name(p, fallback=""):
     """Return 'First Last' from a Sleeper player dict, or fallback if empty."""
     return f"{p.get('first_name', '')} {p.get('last_name', '')}".strip() or fallback
@@ -1119,6 +1139,23 @@ else:
 with st.sidebar:
     st.title("🏈 Kingston Dynasty")
     st.caption("Kingston Dynasty League")
+
+    # ── My Team — global identity, persisted across sessions ─────────────────
+    _team_opts = ["—"] + sorted(team_name_to_rid.keys())
+    if "_my_team_loaded" not in st.session_state:
+        st.session_state._my_team_loaded = True
+        _saved_team = load_my_team()
+        st.session_state.my_team_pick = _saved_team if _saved_team in _team_opts else "—"
+    _my_team_sel = st.selectbox("My Team", _team_opts, key="my_team_pick")
+    my_team = None if _my_team_sel == "—" else _my_team_sel
+    if st.session_state.get("_last_my_team", "__unset__") != my_team:
+        save_my_team(my_team)
+        # Identity changed → reset page-level sticky team choices so the
+        # new team becomes the default everywhere on next visit
+        for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
+            st.session_state.pop(_sk, None)
+        st.session_state._last_my_team = my_team
+
     st.divider()
     page = st.radio("", [
         "🏠 League Overview",
@@ -1464,8 +1501,14 @@ elif page == "📋 Rosters":
     df_r = df_r.rename(columns={"Value": val_col})
 
     col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
-    sel_teams = col_a.multiselect("Teams",     sorted(df_r["Team"].unique().tolist()),  key="r_team",
+    _r_team_opts = sorted(df_r["Team"].unique().tolist())
+    _r_default = st.session_state.get("_sticky_r_team")
+    if _r_default is None:   # no choice made this session → default to My Team
+        _r_default = [my_team] if my_team in _r_team_opts else []
+    _r_default = [t for t in _r_default if t in _r_team_opts]
+    sel_teams = col_a.multiselect("Teams", _r_team_opts, default=_r_default, key="r_team",
                                   placeholder="All teams")
+    st.session_state._sticky_r_team = sel_teams
     sel_pos   = col_b.multiselect("Positions", sorted(df_r["Pos"].unique().tolist()),   key="r_pos",
                                   placeholder="All positions")
     sel_slots = col_c.multiselect("Slot",      ["Starter", "Bench", "Taxi"],            key="r_slot",
@@ -1670,10 +1713,17 @@ elif page == "🔍 Free Agents":
     st.subheader("🔄 Pickup & Drop Advisor")
     st.caption("Select your team to see personalised free agent targets and roster trim candidates.")
 
+    _adv_opts    = sorted(team_name_to_rid.keys())
+    _adv_default = st.session_state.get("_sticky_fa_adv")
+    if _adv_default not in _adv_opts:   # no choice this session → default to My Team
+        _adv_default = my_team if my_team in _adv_opts else None
     _adv_team = st.selectbox(
-        "Your Team", sorted(team_name_to_rid.keys()),
-        index=None, placeholder="Select a team…", key="fa_advisor_team",
+        "Your Team", _adv_opts,
+        index=_adv_opts.index(_adv_default) if _adv_default else None,
+        placeholder="Select a team…", key="fa_advisor_team",
     )
+    if _adv_team:
+        st.session_state._sticky_fa_adv = _adv_team
 
     if _adv_team:
         # Respect the "Include Rookies" checkbox from the filters above
@@ -2052,11 +2102,17 @@ elif page == "📈 Trending":
 elif page == "🔄 Trade Analyzer":
     # team_data / league_avgs / all_players_by_pos already computed above tabs
     # ── Team selector ─────────────────────────────────────────────────────────
+    _ta_opts    = sorted(team_name_to_rid.keys())
+    _ta_default = st.session_state.get("_sticky_ta_team")
+    if _ta_default not in _ta_opts:   # no choice this session → default to My Team
+        _ta_default = my_team if my_team in _ta_opts else _ta_opts[0]
     sel_ta_team = st.selectbox(
         "Select team to analyze",
-        sorted(team_name_to_rid.keys()),
+        _ta_opts,
+        index=_ta_opts.index(_ta_default),
         key="ta_team",
     )
+    st.session_state._sticky_ta_team = sel_ta_team
     rid = team_name_to_rid[sel_ta_team]
     td  = team_data[rid]
 
@@ -2752,7 +2808,7 @@ elif page == "🏟️ Draft Room":
         is_confirmed = pick in confirmed
         draft_rows.append({
             "Pick":            pick,
-            "Team":            row["Team"],
+            "Team":            f"⭐ {row['Team']}" if my_team and row["Team"] == my_team else row["Team"],
             "Pick FC Value":   row["Value"],
             "Est. Rookie":     sel.get("name", "—"),
             "Pos":             sel.get("pos",  "—"),
