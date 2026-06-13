@@ -13,3 +13,8 @@ my_team.json
 .DS_Store
 ~$*
 favorites.json
+
+# Unrelated projects / local tooling / debug artifacts (kept on disk, not in repo)
+pi-dashboard/
+.claude/
+*.docx
