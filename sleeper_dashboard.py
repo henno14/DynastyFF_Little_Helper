@@ -222,17 +222,30 @@ KTC_CACHE = "ktc_cache.json"
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ktc_values():
     """Scrape KTC dynasty SF rankings from the embedded playersArray JS variable.
-    Uses subprocess curl to bypass LibreSSL TLS incompatibility with KTC's server.
+    Tries requests first (works on Linux/hosted); falls back to subprocess curl,
+    which bypasses the LibreSSL TLS incompatibility with KTC's server on macOS.
     Returns {ktcId_str: {name, pos, value (0-10K normalised), rank, posRank}}.
     """
     import json as _json, subprocess as _sub
 
+    _KTC_URL = "https://keeptradecut.com/dynasty-rankings"
+    _KTC_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Referer": "https://keeptradecut.com/",
+    }
+
     def _fetch_html():
+        try:
+            r = requests.get(_KTC_URL, headers=_KTC_HEADERS, timeout=20)
+            r.raise_for_status()
+            return r.text
+        except Exception as e:
+            print(f"  KTC via requests failed ({e}); trying curl...")
         r = _sub.run(
             ["curl", "-s", "--max-time", "20",
-             "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-             "-H", "Referer: https://keeptradecut.com/",
-             "https://keeptradecut.com/dynasty-rankings"],
+             "-H", f"User-Agent: {_KTC_HEADERS['User-Agent']}",
+             "-H", f"Referer: {_KTC_HEADERS['Referer']}",
+             _KTC_URL],
             capture_output=True, text=True, timeout=25,
         )
         if r.returncode != 0:
