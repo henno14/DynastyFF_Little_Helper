@@ -1998,9 +1998,11 @@ elif page == "🔍 Free Agents":
     if _adv_default not in _adv_opts:   # no choice this session → default to My Team
         _adv_default = my_team if my_team in _adv_opts else None
     _adv_team = st.selectbox(
-        "Your Team", _adv_opts,
+        "Team to advise", _adv_opts,
         index=_adv_opts.index(_adv_default) if _adv_default else None,
         placeholder="Select a team…", key="fa_advisor_team",
+        help="Defaults to your sidebar 'My Team'. Change it here to get pickup/drop advice "
+             "for a different team without switching your global selection.",
     )
     if _adv_team:
         st.session_state._sticky_fa_adv = _adv_team
@@ -2409,7 +2411,8 @@ elif page == "🔄 Trade Analyzer":
 
     # ── Positional strength — summary banner + detail table ──────────────────
     st.subheader("Positional Strength vs League Average")
-    st.caption("Score (0–100) = league rank (40%) + value gap (40%) + depth drop-off (20%)")
+    st.caption(f"Score (0–100) = league rank (40%) + value gap (40%) + depth drop-off (20%) · "
+               f"based on value source: **{value_source}** (change in sidebar)")
 
     _n_teams   = len(team_data)
     _need_pos  = td.get("need_pos")
