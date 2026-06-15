@@ -11,6 +11,7 @@ import sys
 import os
 import json
 import re
+import contextlib
 import requests
 import feedparser
 import plotly.graph_objects as go
@@ -1312,7 +1313,13 @@ if not st.session_state.get("league_id"):
 
 league_id = st.session_state.league_id
 
-with st.spinner("Loading league data..."):
+# Show the loading spinner ONLY on a genuine cold load (first visit, league switch,
+# or manual Refresh). On warm reruns the data is cached and returns instantly — a
+# spinner element flashing in/out at the top of the page is what makes the main
+# content "jump", so we suppress it entirely when the league is already warmed.
+_cold_load = st.session_state.get("_data_warmed_for") != league_id
+_load_spin = st.spinner("Loading your league…") if _cold_load else contextlib.nullcontext()
+with _load_spin:
     try:
         (league, rosters, users, traded_ownership, drafts, slot_map,
          players, player_pts, pos_ranks, fc_values, fc_rookies, fc_picks, scoring) = load_all_data(league_id)
@@ -1322,13 +1329,12 @@ with st.spinner("Loading league data..."):
             st.session_state.league_id = None
             st.rerun()
         st.stop()
-
-with st.spinner("Loading value sources (DN · KTC · DP)..."):
     dn_map       = fetch_dn_values()
     ktc_by_id    = fetch_ktc_values()
     dp_map, cw_ktc = fetch_dp_values()
     ktc_map      = build_ktc_sleeper_map(ktc_by_id, cw_ktc, players)
     val_maps     = {"dn": dn_map, "ktc": ktc_map, "dp": dp_map}
+st.session_state._data_warmed_for = league_id
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
 st.session_state.setdefault("app_theme", "System Default")
@@ -1477,7 +1483,8 @@ def _refresh_all_data():
     load_trending.clear()
     fetch_rss_news.clear()
     for _k in ["_trade_cache_key", "_team_data", "_league_avgs",
-               "_all_players_by_pos", "_team_name_to_rid", "_def_analysis", "_league_def_avg"]:
+               "_all_players_by_pos", "_team_name_to_rid", "_def_analysis", "_league_def_avg",
+               "_data_warmed_for"]:   # re-show the loading spinner during the real re-fetch
         st.session_state.pop(_k, None)
 
 # ── Page: League Overview ─────────────────────────────────────────────────────
