@@ -2563,7 +2563,8 @@ elif page == "🔄 Trade Analyzer":
     st.subheader("🤝 Best Trade Partners")
     st.caption(
         "Ranked by mutual trade fit: how much they have what you need (40%) + "
-        "how much they need what you have (40%) + value proximity (20%)."
+        "how much they need what you have (40%) + value proximity (20%). "
+        "Sample trades pair their target with your closest-value surplus piece — a balanced starting point, not your franchise asset."
     )
 
     _auto_need    = td.get("need_pos")
@@ -2590,8 +2591,6 @@ elif page == "🔄 Trade Analyzer":
         st.info("No clear positional imbalance — trade partner ranking requires at least one need and one surplus position.")
     else:
         _my_surplus_players = td.get("pos_players", {}).get(_my_surplus, [])
-        _my_give_val        = _my_surplus_players[0]["value"] if _my_surplus_players else 0
-        _my_give_name       = _my_surplus_players[0]["name"]  if _my_surplus_players else "—"
 
         _partner_rows = []
         for _o_rid, _o_td in team_data.items():
@@ -2603,10 +2602,20 @@ elif page == "🔄 Trade Analyzer":
             # How much does the other team need what I have?
             _their_need   = _o_td.get("need_scores", {}).get(_my_surplus, 0)
 
-            # Value proximity: my best surplus player vs their best player at my need pos
+            # Their headline asset at my need position (the appealing target)
             _their_candidates = _o_td.get("pos_players", {}).get(_my_need, [])
             _their_give_val   = _their_candidates[0]["value"] if _their_candidates else 0
             _their_give_name  = _their_candidates[0]["name"]  if _their_candidates else "—"
+
+            # Value-match MY side: offer the surplus player closest in value to what I'd get,
+            # not my franchise asset — produces a realistic, balanced 1-for-1 sample.
+            if _my_surplus_players and _their_give_val > 0:
+                _match = min(_my_surplus_players, key=lambda p: abs((p["value"] or 0) - _their_give_val))
+                _my_give_val, _my_give_name = _match["value"] or 0, _match["name"]
+            elif _my_surplus_players:
+                _my_give_val, _my_give_name = _my_surplus_players[0]["value"] or 0, _my_surplus_players[0]["name"]
+            else:
+                _my_give_val, _my_give_name = 0, "—"
 
             if _my_give_val > 0 and _their_give_val > 0:
                 _val_gap   = abs(_my_give_val - _their_give_val)
