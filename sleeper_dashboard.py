@@ -503,9 +503,15 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
     cfg = {**(col_cfg or {}), "⭐": st.column_config.CheckboxColumn("⭐", default=False)}
     disabled = [c for c in dv.columns if c != "⭐"]
     data = styler_fn(dv) if styler_fn else dv
+    # st.data_editor persists edits by ROW POSITION under its key. If the grid
+    # re-sorts/re-filters while the key is unchanged, those positional edits smear
+    # onto the wrong player. We version the key so every favourites change rotates
+    # to a fresh editor — the ⭐ column is always rebuilt from the favourites set,
+    # so favourites stay bound to the player, never the row index.
+    _ver = st.session_state.get("_fav_ver", 0)
     edited = st.data_editor(
         data, use_container_width=True, hide_index=True,
-        key=editor_key, column_config=cfg, disabled=disabled,
+        key=f"{editor_key}_{_ver}", column_config=cfg, disabled=disabled,
     )
     new_favs = set(favs)
     for _, row in edited.iterrows():
@@ -516,6 +522,7 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
     if new_favs != favs:
         st.session_state.favorites = new_favs
         save_favorites(new_favs)
+        st.session_state._fav_ver = _ver + 1   # rotate editor → drop stale row deltas
         st.rerun()
 
 # ── Data loading (cached) ─────────────────────────────────────────────────────
@@ -799,7 +806,7 @@ def build_trending_df(adds, drops, players, rosters, users, player_pts, fc_value
             "Player":            name,
             "Pos":               p.get("position") or "—",
             "NFL Team":          p.get("team") or "FA",
-            "Age":               p.get("age") or None,
+            "Age":               int(p["age"]) if p.get("age") is not None else None,
             "Value":             get_active_value(pid, fc_values, _vm, value_source),
             "Rank":              get_active_rank( pid, fc_values, _vm, value_source),
             f"{STATS_SEASON} Pts": player_pts.get(pid),
@@ -1371,10 +1378,14 @@ if page == "🏠 League Overview":
     # Top metrics
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Teams",          len(rosters))
-    col2.metric("FC Values", f"{len(fc_values):,}", delta=f"DN:{len(dn_map)} KTC:{len(ktc_map)} DP:{len(dp_map)}")
+    col2.metric("Players Valued", f"{len(fc_values):,}")
     col3.metric("Rookies Ranked", len(fc_rookies))
     col4.metric("Pick Values",    len(fc_picks))
     col5.metric("Stats Season",   STATS_SEASON)
+    st.caption(
+        f"Value sources loaded — FantasyCalc {len(fc_values):,} · DynastyNerds {len(dn_map):,} · "
+        f"KeepTradeCut {len(ktc_map):,} · DynastyProcess {len(dp_map):,}"
+    )
 
     st.markdown("---")
 
@@ -1551,11 +1562,16 @@ if page == "🏠 League Overview":
             ))
 
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 100]),
+                bgcolor="rgba(0,0,0,0)",
+            ),
             showlegend=True,
             height=500,
-            margin=dict(t=40, b=40),
+            margin=dict(t=60, b=40, l=60, r=60),   # padding so axis labels (QB) don't clip
             template=_chart_template,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
         )
         st.plotly_chart(fig_radar, use_container_width=True)
 
@@ -1610,9 +1626,11 @@ if page == "🏠 League Overview":
             template=_chart_template,
             uniformtext_minsize=9,
             uniformtext_mode="show",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
         )
+        st.caption("#N inside each segment = that team's league rank at the position (by avg value).")
         st.plotly_chart(fig_bar, use_container_width=True)
-        st.caption("#N inside a segment = that team's league rank at the position (by avg value).")
 
     # ── Chart C: Rebuild vs Contend Scatter ───────────────────────────────────
     with st.container():
@@ -1764,11 +1782,11 @@ elif page == "📋 Rosters":
         "RB":  "#22c55e",
         "WR":  "#f59e0b",
         "TE":  "#a855f7",
-        "DL":  "#475569",
-        "LB":  "#64748b",
-        "DB":  "#94a3b8",
-        "DEF": "#334155",
-        "K":   "#cbd5e1",
+        "DL":  "#0d9488",   # teal
+        "LB":  "#b45309",   # amber-brown
+        "DB":  "#be185d",   # rose
+        "DEF": "#334155",   # slate
+        "K":   "#cbd5e1",   # light grey
     }
 
     _rc_df = (
@@ -1816,6 +1834,8 @@ elif page == "📋 Rosters":
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         uniformtext_minsize=9,
         uniformtext_mode="show",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     _fig_rc.update_traces(
         marker_line_width=0,
@@ -1897,7 +1917,7 @@ elif page == "🎯 Draft Picks":
             column_config={"Value": COL_CFG["Value"]},
         )
     _hl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv["Team"] == my_team).any() else ""
-    st.caption(f"{len(dv)} picks shown · 🟢 Surplus = pick-rich owner · 🔴 Deficit = pick-poor owner{_hl_note}")
+    st.caption(f"{len(dv)} picks shown · 🟢 Surplus = pick-rich · 🟡 Average · 🔴 Deficit = pick-poor{_hl_note}")
 
 # ── Page: Free Agents ────────────────────────────────────────────────────────
 elif page == "🔍 Free Agents":
@@ -1942,7 +1962,7 @@ elif page == "🔍 Free Agents":
     }
 
     fav_grid(dv[fa_display_cols], "Player", "fa_fav_grid", col_cfg=fa_col_cfg)
-    st.caption(f"{len(dv):,} free agents shown · Value source: **{value_source}** · click ⭐ to favourite")
+    st.caption(f"{len(dv):,} free agents shown · Value source: **{value_source}** · tick the ⭐ box to favourite")
 
     # ── Pickup & Drop Advisor ─────────────────────────────────────────────────
     st.divider()
@@ -2123,7 +2143,7 @@ elif page == "🔍 Free Agents":
 # ── Page: 2026 Rookies ───────────────────────────────────────────────────────
 elif page == "🌟 2026 Rookies":
     df_rk = build_rookies_df(fc_rookies, rosters, fc_values=fc_values, val_maps=val_maps, value_source=value_source)
-    df_rk = df_rk.rename(columns={"Value": val_col})
+    df_rk = df_rk.rename(columns={"Value": val_col, "Rank": "Overall Rank"})
 
     col_a, col_b, col_c, col_d = st.columns([2, 2, 3, 1])
     sel_rk_pos  = col_a.multiselect("Positions",    sorted(df_rk["Pos"].unique().tolist()), key="rk_pos",
@@ -2142,8 +2162,8 @@ elif page == "🌟 2026 Rookies":
     dv = df_rk[mask]
 
     fav_grid(dv, "Player", "rk_fav_grid",
-             col_cfg={val_col: COL_CFG["Value"], "Rank": COL_CFG["Rank"]})
-    st.caption(f"{len(dv)} rookies shown · Value source: **{value_source}** · click ⭐ to favourite")
+             col_cfg={val_col: COL_CFG["Value"], "Overall Rank": COL_CFG["Rank"]})
+    st.caption(f"{len(dv)} rookies shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the ⭐ box to favourite")
 
 # ── Page: Scoring Rules ──────────────────────────────────────────────────────
 elif page == "📊 Scoring Rules":
@@ -2298,7 +2318,7 @@ elif page == "👥 Players":
         )
     fav_grid(dv_pl, "Player", "pl_fav_grid", col_cfg=_pl_col_cfg, styler_fn=_pl_styler)
     _pl_note = f" · gold = {my_team}" if my_team and (dv_pl["Owner"] == my_team).any() else ""
-    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale · click ⭐ to favourite{_pl_note}")
+    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale · tick the ⭐ box to favourite{_pl_note}")
 
 # ── Page: Trending ───────────────────────────────────────────────────────────
 elif page == "📈 Trending":
@@ -3110,7 +3130,7 @@ elif page == "🏟️ Draft Room":
         clear_draft_selections(league_id)
         st.rerun()
 
-    st.caption(f"{len(confirmed)} confirmed · {len(df_board) - len(confirmed)} estimated · auto-saved to draft_selections.json")
+    st.caption(f"{len(confirmed)} confirmed · {len(df_board) - len(confirmed)} estimated · your draft is saved automatically")
 
     st.divider()
 
@@ -3157,7 +3177,7 @@ elif page == "🏟️ Draft Room":
     else:
         fav_grid(df_pool, "Rookie", "dr_pool_fav_grid",
                  col_cfg={"Value": COL_CFG["Value"]})
-    st.caption(f"{len(df_pool)} rookies still available · click ⭐ to favourite")
+    st.caption(f"{len(df_pool)} rookies still available · tick the ⭐ box to favourite")
 
 # ── Page: Fantasy News ───────────────────────────────────────────────────────
 elif page == "📰 Fantasy News":
