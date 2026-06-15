@@ -834,7 +834,7 @@ def build_rookies_df(fc_rookies, rosters, fc_values=None, val_maps=None, value_s
             "Player":   r.get("name", ""),
             "Pos":      r.get("position", "—"),
             "NFL Team": r.get("team", "Prospect"),
-            "Age":      round(r["age"], 1) if r.get("age") else None,
+            "Age":      int(r["age"]) if r.get("age") else None,
             "Value":    val,
             "Pos Rank": r.get("positionRank"),
             "30d Trend":trend_disp,
@@ -1173,11 +1173,14 @@ NEWS_FEEDS = {
 }
 
 def _parse_dt(entry):
-    """Return a timezone-aware datetime from an RSS entry, or epoch if missing."""
-    pt = entry.get("published_parsed")
+    """Return a timezone-aware datetime from an RSS entry, or epoch if missing.
+    feedparser normalises published_parsed to UTC, so use calendar.timegm
+    (interprets the struct as UTC) — NOT time.mktime (which assumes local time
+    and skews every timestamp, pushing many into the 'future')."""
+    pt = entry.get("published_parsed") or entry.get("updated_parsed")
     if pt:
-        import time as _time
-        return datetime.fromtimestamp(_time.mktime(pt), tz=timezone.utc)
+        import calendar as _cal
+        return datetime.fromtimestamp(_cal.timegm(pt), tz=timezone.utc)
     return datetime.fromtimestamp(0, tz=timezone.utc)
 
 @st.cache_data(ttl=1800, show_spinner=False)   # 30-min cache
