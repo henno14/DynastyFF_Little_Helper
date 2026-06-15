@@ -1350,7 +1350,24 @@ _sb_team_names = sorted({
 })
 
 with st.sidebar:
-    st.title(f"🏈 {league.get('name', 'Dynasty Dashboard')}")
+    # ── Brand header (placeholder logo — swap for the real mascot later) ──────
+    st.markdown(
+        """
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:2px;">
+          <div style="width:40px; height:40px; border-radius:11px; flex:0 0 auto;
+               background:linear-gradient(135deg,#ff5a5f,#c0392b);
+               display:flex; align-items:center; justify-content:center;
+               font-size:22px; box-shadow:0 2px 6px rgba(0,0,0,.4);">🤖</div>
+          <div style="line-height:1.1;">
+            <div style="font-size:1.15rem; font-weight:800; color:#fff;">Dynasty FF</div>
+            <div style="font-size:0.92rem; font-weight:600; color:#ff7a7e; letter-spacing:.02em;">Lil' Helper</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.divider()
+    st.subheader(f"🏈 {league.get('name', 'Dynasty League')}")
     st.caption(f"Sleeper · {league.get('season', '')} · {league.get('total_rosters', '?')} teams")
 
     # My Team + Value Source — persisted per league; re-seeded when league changes
@@ -1448,24 +1465,20 @@ with st.sidebar:
         "📊 Scoring Rules",
         "⚙️ Settings",
     ], label_visibility="collapsed", key="nav_page")
-    st.divider()
-    st.caption(f"Source: **{value_source}** · Theme: **{_theme}**")
-    st.caption(f"Last loaded: {datetime.now().strftime('%H:%M')}")
-    if st.button("🔄 Refresh", use_container_width=True):
-        load_all_data.clear()
-        fetch_dn_values.clear()
-        fetch_ktc_values.clear()
-        fetch_dp_values.clear()
-        build_ktc_sleeper_map.clear()
-        load_trending.clear()
-        fetch_rss_news.clear()
-        for _k in ["_trade_cache_key", "_team_data", "_league_avgs",
-                   "_all_players_by_pos", "_team_name_to_rid", "_def_analysis", "_league_def_avg"]:
-            st.session_state.pop(_k, None)
-        st.rerun()
-    if st.button("🔁 Switch League", use_container_width=True):
-        st.session_state.league_id = None
-        st.rerun()
+
+
+def _refresh_all_data():
+    """Clear every cached source so the next run re-fetches fresh data."""
+    load_all_data.clear()
+    fetch_dn_values.clear()
+    fetch_ktc_values.clear()
+    fetch_dp_values.clear()
+    build_ktc_sleeper_map.clear()
+    load_trending.clear()
+    fetch_rss_news.clear()
+    for _k in ["_trade_cache_key", "_team_data", "_league_avgs",
+               "_all_players_by_pos", "_team_name_to_rid", "_def_analysis", "_league_def_avg"]:
+        st.session_state.pop(_k, None)
 
 # ── Page: League Overview ─────────────────────────────────────────────────────
 if page == "🏠 League Overview":
@@ -2076,8 +2089,8 @@ elif page == "🔍 Free Agents":
     col_b.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
     incl_rookies  = col_b.checkbox("Include Rookies", value=False, key="fa_rookies")
     fa_fav_only   = col_b.checkbox("⭐ Favourites only", key="fa_fav_only")
-    min_val       = col_c.number_input("Min Value", min_value=0, value=500, step=100, key="fa_min",
-                                       help="Hides deep-bench noise. Set to 0 to show every unrostered player.")
+    min_val       = col_c.number_input("Min Value", min_value=0, value=0, step=100, key="fa_min",
+                                       help="0 shows every unrostered player. Raise to hide deep-bench noise.")
     fa_srch       = col_d.text_input("Search player name", key="fa_name", placeholder="e.g. Austin Ekeler")
 
     mask = pd.Series(True, index=df_fa.index)
@@ -2086,7 +2099,12 @@ elif page == "🔍 Free Agents":
     if min_val > 0:      mask &= df_fa[val_col].notna() & (df_fa[val_col] >= min_val)
     if fa_srch:          mask &= df_fa["Player"].str.contains(fa_srch, case=False, na=False)
     if fa_fav_only:      mask &= df_fa["Player"].isin(st.session_state.favorites)
-    dv = df_fa[mask]
+    # Sort by Rank then Tier ascending (lower = more valuable); unranked players fall last
+    dv = df_fa[mask].sort_values(
+        by=["Rank", "Tier"],
+        key=lambda col: pd.to_numeric(col, errors="coerce"),
+        na_position="last",
+    ).reset_index(drop=True)
 
     # Build display columns dynamically based on selected source
     fa_display_cols = ["Player", "Pos", "NFL Team", "Age", "Exp", "Status",
@@ -2101,7 +2119,7 @@ elif page == "🔍 Free Agents":
     }
 
     fav_grid(dv[fa_display_cols], "Player", "fa_fav_grid", col_cfg=fa_col_cfg)
-    st.caption(f"{len(dv):,} free agents shown · Value source: **{value_source}** · tick the ⭐ box to favourite")
+    st.caption(f"{len(dv):,} free agents shown · sorted by Rank then Tier (best first) · Value source: **{value_source}** · tick the ⭐ box to favourite")
 
     # ── Pickup & Drop Advisor ─────────────────────────────────────────────────
     st.divider()
@@ -2329,7 +2347,27 @@ elif page == "📊 Scoring Rules":
 # ── Page: Settings ───────────────────────────────────────────────────────────
 elif page == "⚙️ Settings":
     st.title("Settings")
-    st.caption("These settings persist for your current session.")
+    st.caption("Your team, value source, favourites and tags are saved automatically for this league.")
+
+    # ── Data & League controls (moved off the sidebar) ───────────────────────
+    st.subheader("Data & League")
+    _dc1, _dc2, _dc3 = st.columns([2, 1, 1])
+    _dc1.markdown(
+        f"**League:** {league.get('name', '—')}  \n"
+        f"**Value source:** {value_source}  \n"
+        f"<span style='color:grey'>Last loaded: {datetime.now().strftime('%H:%M')}</span>",
+        unsafe_allow_html=True,
+    )
+    _dc2.markdown('<div style="padding-top:0.5rem;"></div>', unsafe_allow_html=True)
+    if _dc2.button("🔄 Refresh data", use_container_width=True,
+                   help="Re-fetch all values, stats and news from the sources"):
+        _refresh_all_data()
+        st.rerun()
+    _dc3.markdown('<div style="padding-top:0.5rem;"></div>', unsafe_allow_html=True)
+    if _dc3.button("🔁 Switch league", use_container_width=True):
+        st.session_state.league_id = None
+        st.rerun()
+    st.divider()
 
     col_s1, col_s2 = st.columns(2)
 
