@@ -28,7 +28,7 @@ from sleeper_dynasty_tracker import (
 )
 
 st.set_page_config(
-    page_title="Dynasty Tracker",
+    page_title="Dynasty FF Lil' Helper",
     page_icon="🏈",
     layout="wide",
 )
@@ -1283,7 +1283,11 @@ if "league_id" not in st.session_state:
     st.session_state.league_id = _read_prefs_file().get("last_league_id") or LEAGUE_ID or None
 
 if not st.session_state.get("league_id"):
-    st.title("🏈 Dynasty Dashboard")
+    st.title("🏈 Dynasty FF Lil' Helper")
+    st.caption(
+        "Your dynasty trade brain — blends FantasyCalc, DynastyNerds, KeepTradeCut & DynastyProcess "
+        "into one set of values, plus trade analysis, draft tools, and a free-agent advisor."
+    )
     st.caption(
         "Enter your **Sleeper league ID** to get started. You can find it in your league's URL: "
         "`sleeper.com/leagues/<league_id>/...`"
@@ -1389,18 +1393,19 @@ active_values = {
 }
 
 
-# ── Theme-aware CSS injection ─────────────────────────────────────────────────
-_theme = st.session_state.get("app_theme", "System Default")
-if _theme == "Dark":
-    st.markdown("""
-    <style>
-        .stApp, .block-container { background-color: #0e1117 !important; color: #fafafa !important; }
-        [data-testid="stMetric"] { background: #1c1f26 !important; border: 1px solid #2d3140 !important; color: #fafafa !important; }
-        [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color: #fafafa !important; }
-        .stDataFrame { background: #1c1f26 !important; }
-    </style>
-    """, unsafe_allow_html=True)
-# "System Default" — no injection, let Streamlit handle it
+# ── Dark theme (single source of truth) ───────────────────────────────────────
+# Dark-only by design: several hand-built elements (Power Rankings table, chart
+# colours) are styled for dark. "System Default" shipped a broken light view to
+# light-mode users, so it was removed. Light can return once those are tokenised.
+_theme = "Dark"
+st.markdown("""
+<style>
+    .stApp, .block-container { background-color: #0e1117 !important; color: #fafafa !important; }
+    [data-testid="stMetric"] { background: #1c1f26 !important; border: 1px solid #2d3140 !important; color: #fafafa !important; }
+    [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color: #fafafa !important; }
+    .stDataFrame { background: #1c1f26 !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # Trade/DEF analysis — cached in session_state; only recomputes when value_source changes or Refresh is clicked
 _trade_cache_key = f"trade_data_{league_id}_{value_source}"
@@ -1618,12 +1623,16 @@ if page == "🏠 League Overview":
 
         HIGHLIGHT_COLORS = ["#2196F3", "#F44336", "#4CAF50"]
         _chart_template = "plotly_dark" if _theme == "Dark" else "plotly_white"
-        _bg_trace_color = "rgba(200,200,200,0.35)" if _theme == "Dark" else "rgba(160,160,160,0.3)"
+        _bg_trace_color = "rgba(180,180,180,0.10)"   # faint so selected teams pop
+        name_to_rid = {td["name"]: rid for rid, td in team_data.items()}
+        _sel_rids = {name_to_rid.get(t) for t in selected_teams}
 
         fig_radar = go.Figure()
 
-        # Background traces for all teams
+        # Faded background traces for NON-selected teams only (context, not clutter)
         for rid, td in team_data.items():
+            if rid in _sel_rids:
+                continue
             r_vals = [norm_radar[dim][rid] for dim in radar_dims]
             r_vals += [r_vals[0]]  # close polygon
             dims_closed = radar_dims + [radar_dims[0]]
@@ -1631,13 +1640,12 @@ if page == "🏠 League Overview":
                 r=r_vals,
                 theta=dims_closed,
                 line=dict(color=_bg_trace_color, width=1),
-                opacity=0.6,
+                opacity=0.5,
                 showlegend=False,
                 hoverinfo="skip",
             ))
 
         # Coloured traces for selected teams
-        name_to_rid = {td["name"]: rid for rid, td in team_data.items()}
         for i, team_name in enumerate(selected_teams):
             sel_rid = name_to_rid.get(team_name)
             if sel_rid is None:
@@ -2068,7 +2076,8 @@ elif page == "🔍 Free Agents":
     col_b.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
     incl_rookies  = col_b.checkbox("Include Rookies", value=False, key="fa_rookies")
     fa_fav_only   = col_b.checkbox("⭐ Favourites only", key="fa_fav_only")
-    min_val       = col_c.number_input("Min Value", min_value=0, value=0, step=100, key="fa_min")
+    min_val       = col_c.number_input("Min Value", min_value=0, value=500, step=100, key="fa_min",
+                                       help="Hides deep-bench noise. Set to 0 to show every unrostered player.")
     fa_srch       = col_d.text_input("Search player name", key="fa_name", placeholder="e.g. Austin Ekeler")
 
     mask = pd.Series(True, index=df_fa.index)
@@ -2347,19 +2356,7 @@ elif page == "⚙️ Settings":
 
     with col_s2:
         st.subheader("Theme")
-        st.caption(
-            "Choose a visual theme. **System Default** follows your OS / browser preference. "
-            "Changes apply immediately on the next interaction."
-        )
-        _theme_options = ["System Default", "Dark"]
-        _theme_sel = st.radio(
-            "app_theme_setting",
-            _theme_options,
-            index=_theme_options.index(st.session_state.get("app_theme", "System Default")),
-            label_visibility="collapsed",
-        )
-        st.session_state["app_theme"] = _theme_sel
-        st.caption("Tip: Streamlit also has a built-in theme toggle in the ☰ menu (top-right).")
+        st.info("🌙 **Dark theme** — Dynasty FF Lil' Helper is dark-only for now. A polished light theme is on the roadmap.")
 
 # ── Page: Players ─────────────────────────────────────────────────────────────
 elif page == "👥 Players":
