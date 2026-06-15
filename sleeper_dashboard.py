@@ -147,6 +147,38 @@ def save_favorites(favs):
     elif os.path.exists(FAVORITES_FILE):
         os.remove(FAVORITES_FILE)
 
+# ── Player status tags (Untouchable / Keep / Trade / Cut) — per league ────────
+TAG_OPTIONS = ["", "Untouchable", "Keep", "Trade", "Cut"]
+TAG_DISPLAY = {
+    "Untouchable": "🔒 Untouchable",
+    "Keep":        "✅ Keep",
+    "Trade":       "🔄 Trade Block",
+    "Cut":         "✂️ Cut",
+}
+
+def _player_tags_file(league_id):
+    return os.path.join(_APP_DIR, f"player_tags_{league_id}.json")
+
+def load_player_tags(league_id):
+    """Load {player_name: status} for a league."""
+    path = _player_tags_file(league_id)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f) or {}
+        except Exception as e:
+            print(f"[WARNING] Could not load player tags from {path}: {e}")
+    return {}
+
+def save_player_tags(league_id, tags):
+    """Persist {player_name: status} for a league (drop the file when empty)."""
+    path = _player_tags_file(league_id)
+    if tags:
+        with open(path, "w") as f:
+            json.dump(tags, f, indent=2)
+    elif os.path.exists(path):
+        os.remove(path)
+
 def player_name(p, fallback=""):
     """Return 'First Last' from a Sleeper player dict, or fallback if empty."""
     return f"{p.get('first_name', '')} {p.get('last_name', '')}".strip() or fallback
@@ -524,6 +556,50 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
         st.session_state.favorites = new_favs
         save_favorites(new_favs)
         st.session_state._fav_ver = _ver + 1   # rotate editor → drop stale row deltas
+        st.rerun()
+
+
+def tag_editor(roster_players, editor_key):
+    """Render an editable Status column for a list of roster players.
+    roster_players: list of dicts with 'name', 'pos', 'value'.
+    Persists {player_name: status} to st.session_state.player_tags (per league).
+    Uses the same versioned-key trick as fav_grid to avoid positional edit smear."""
+    tags = st.session_state.player_tags
+    rows = [{
+        "Player": p["name"],
+        "Pos":    p.get("pos", "—"),
+        "Value":  p.get("value"),
+        "Status": tags.get(p["name"], ""),
+    } for p in roster_players]
+    if not rows:
+        st.info("No valued players found for this team.")
+        return
+    df = pd.DataFrame(rows)
+    _tver = st.session_state.get("_tag_ver", 0)
+    edited = st.data_editor(
+        df, use_container_width=True, hide_index=True,
+        key=f"{editor_key}_{_tver}",
+        column_config={
+            "Value":  COL_CFG["Value"],
+            "Status": st.column_config.SelectboxColumn(
+                "Status", options=TAG_OPTIONS, default="",
+                help="🔒 Untouchable = never suggested in trades · ✅ Keep · "
+                     "🔄 Trade Block = actively shopping · ✂️ Cut candidate",
+            ),
+        },
+        disabled=["Player", "Pos", "Value"],
+    )
+    new_tags = dict(tags)
+    for _, r in edited.iterrows():
+        nm, stt = r["Player"], (r["Status"] or "")
+        if stt:
+            new_tags[nm] = stt
+        elif nm in new_tags:
+            del new_tags[nm]
+    if new_tags != tags:
+        st.session_state.player_tags = new_tags
+        save_player_tags(st.session_state.league_id, new_tags)
+        st.session_state._tag_ver = _tver + 1
         st.rerun()
 
 # ── Data loading (cached) ─────────────────────────────────────────────────────
@@ -1244,6 +1320,10 @@ with st.spinner("Loading value sources (DN · KTC · DP)..."):
 st.session_state.setdefault("app_theme", "System Default")
 if "favorites" not in st.session_state:
     st.session_state.favorites = load_favorites()
+# Player status tags are per league — reseed when the league changes
+if st.session_state.get("_player_tags_league") != league_id:
+    st.session_state.player_tags = load_player_tags(league_id)
+    st.session_state._player_tags_league = league_id
 
 # ── Sidebar: identity + value source (rendered early — value_source drives the
 #    data pipeline below; team names derive straight from rosters/users) ───────
@@ -1794,6 +1874,22 @@ elif page == "📋 Rosters":
         column_config=col_cfg,
     )
     st.caption(f"{len(dv):,} players shown · Value source: **{value_source}**")
+
+    # ── Player status tags (My Team) ──────────────────────────────────────────
+    st.divider()
+    with st.expander("🏷️ Tag your players (Untouchable / Keep / Trade / Cut)", expanded=False):
+        if not my_team:
+            st.info("Set **My Team** in the sidebar to tag your players.")
+        else:
+            _my_rid = team_name_to_rid.get(my_team)
+            _my_pp  = team_data.get(_my_rid, {}).get("pos_players", {}) if _my_rid else {}
+            _my_players = [
+                {"name": p["name"], "pos": _pos, "value": p["value"]}
+                for _pos in SKILL_POSITIONS for p in _my_pp.get(_pos, [])
+            ]
+            _my_players.sort(key=lambda x: x["value"] or 0, reverse=True)
+            st.caption(f"Tagging **{my_team}** · 🔒 Untouchable players are never suggested in trades · shared across Rosters & Trade Analyzer")
+            tag_editor(_my_players, "tags_rosters")
 
     # ── Roster composition bar chart ──────────────────────────────────────────
     st.divider()
@@ -2407,6 +2503,38 @@ elif page == "🔄 Trade Analyzer":
     rid = team_name_to_rid[sel_ta_team]
     td  = team_data[rid]
 
+    # Set of Untouchable player names for THIS team — excluded from all trade-away lists
+    _player_tags = st.session_state.player_tags
+    _untouchable = {
+        p["name"] for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
+        if _player_tags.get(p["name"]) == "Untouchable"
+    }
+
+    # ── Player status tags ────────────────────────────────────────────────────
+    with st.expander("🏷️ Tag players (Untouchable / Keep / Trade / Cut)", expanded=False):
+        _ta_players = [
+            {"name": p["name"], "pos": _pos, "value": p["value"]}
+            for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
+        ]
+        _ta_players.sort(key=lambda x: x["value"] or 0, reverse=True)
+        st.caption(f"Tagging **{sel_ta_team}** · 🔒 Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
+        tag_editor(_ta_players, "tags_trade")
+
+    # ── Your trade block (players tagged 🔄 Trade) ────────────────────────────
+    _trade_block = [
+        {"name": p["name"], "pos": _pos, "value": p["value"]}
+        for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
+        if _player_tags.get(p["name"]) == "Trade"
+    ]
+    if _trade_block:
+        _trade_block.sort(key=lambda x: x["value"] or 0, reverse=True)
+        st.markdown("**🔄 Your Trade Block**")
+        st.dataframe(
+            pd.DataFrame([{"Player": p["name"], "Pos": p["pos"], val_col: p["value"]} for p in _trade_block]),
+            use_container_width=True, hide_index=True,
+            column_config={val_col: COL_CFG["Value"]},
+        )
+
     st.divider()
 
     # ── Positional strength — summary banner + detail table ──────────────────
@@ -2590,7 +2718,8 @@ elif page == "🔄 Trade Analyzer":
     if not _my_need or not _my_surplus or _my_need == _my_surplus:
         st.info("No clear positional imbalance — trade partner ranking requires at least one need and one surplus position.")
     else:
-        _my_surplus_players = td.get("pos_players", {}).get(_my_surplus, [])
+        _my_surplus_players = [p for p in td.get("pos_players", {}).get(_my_surplus, [])
+                               if p["name"] not in _untouchable]
 
         _partner_rows = []
         for _o_rid, _o_td in team_data.items():
@@ -2694,9 +2823,11 @@ elif page == "🔄 Trade Analyzer":
     if not surplus_pos or not need_pos or surplus_pos == need_pos:
         st.info("No clear trade opportunities identified — positional values are well-balanced.")
     else:
-        suggestions = td.get("suggestions", [])
+        # Drop any suggestion that would trade away an Untouchable player
+        suggestions = [s for s in td.get("suggestions", [])
+                       if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
         if not suggestions:
-            st.info("Not enough data to generate suggestions.")
+            st.info("Not enough data to generate suggestions (or all surplus players are tagged Untouchable).")
         else:
             # ── Top 5 ideal player-for-player targets ─────────────────────────
             # Score each candidate: +2 if target has surplus of need_pos,
@@ -2843,11 +2974,14 @@ elif page == "🔄 Trade Analyzer":
     st.caption("Pick any player or pick from this team's roster, choose your target position, and see closest-value options across the league.")
 
     # Build asset options: all players with FC values + all valued picks
+    # (Untouchable players stay selectable here — this is manual exploration —
+    #  but get a 🔒 marker so the intent is visible.)
     asset_options = []
     for pos in SKILL_POSITIONS:
         for player in td["pos_players"][pos]:
+            _lock = "🔒 " if player["name"] in _untouchable else ""
             asset_options.append({
-                "label":     f"{player['name']}  ({pos})  —  {player['value']:,}",
+                "label":     f"{_lock}{player['name']}  ({pos})  —  {player['value']:,}",
                 "value":     player["value"],
                 "type":      "player",
                 "pos":       pos,
