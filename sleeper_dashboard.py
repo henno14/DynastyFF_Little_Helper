@@ -536,27 +536,29 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
     cfg = {**(col_cfg or {}), "⭐": st.column_config.CheckboxColumn("⭐", default=False)}
     disabled = [c for c in dv.columns if c != "⭐"]
     data = styler_fn(dv) if styler_fn else dv
-    # st.data_editor persists edits by ROW POSITION under its key. If the grid
-    # re-sorts/re-filters while the key is unchanged, those positional edits smear
-    # onto the wrong player. We version the key so every favourites change rotates
-    # to a fresh editor — the ⭐ column is always rebuilt from the favourites set,
-    # so favourites stay bound to the player, never the row index.
+    # Wrap in a form so ticking stars batches into ONE save (no per-cell full-page
+    # rerun / "jump"). Fixed height stops the grid reflowing the page. Versioned key
+    # keeps favourites bound to the player, never the row index, across re-sorts.
     _ver = st.session_state.get("_fav_ver", 0)
-    edited = st.data_editor(
-        data, use_container_width=True, hide_index=True,
-        key=f"{editor_key}_{_ver}", column_config=cfg, disabled=disabled,
-    )
-    new_favs = set(favs)
-    for _, row in edited.iterrows():
-        if row["⭐"]:
-            new_favs.add(row[name_col])
-        else:
-            new_favs.discard(row[name_col])
-    if new_favs != favs:
-        st.session_state.favorites = new_favs
-        save_favorites(new_favs)
-        st.session_state._fav_ver = _ver + 1   # rotate editor → drop stale row deltas
-        st.rerun()
+    _h = min(560, 56 + 35 * (len(dv) + 1))
+    with st.form(f"{editor_key}_form_{_ver}", border=False):
+        edited = st.data_editor(
+            data, use_container_width=True, hide_index=True, height=_h,
+            key=f"{editor_key}_{_ver}", column_config=cfg, disabled=disabled,
+        )
+        _submitted = st.form_submit_button("💾 Save favourites", type="primary")
+    if _submitted:
+        new_favs = set(favs)
+        for _, row in edited.iterrows():
+            if row["⭐"]:
+                new_favs.add(row[name_col])
+            else:
+                new_favs.discard(row[name_col])
+        if new_favs != favs:
+            st.session_state.favorites = new_favs
+            save_favorites(new_favs)
+            st.session_state._fav_ver = _ver + 1   # rotate editor → drop stale row deltas
+            st.rerun()
 
 
 def tag_editor(roster_players, editor_key):
@@ -576,31 +578,36 @@ def tag_editor(roster_players, editor_key):
         return
     df = pd.DataFrame(rows)
     _tver = st.session_state.get("_tag_ver", 0)
-    edited = st.data_editor(
-        df, use_container_width=True, hide_index=True,
-        key=f"{editor_key}_{_tver}",
-        column_config={
-            "Value":  COL_CFG["Value"],
-            "Status": st.column_config.SelectboxColumn(
-                "Status", options=TAG_OPTIONS, default="",
-                help="🔒 Untouchable = never suggested in trades · ✅ Keep · "
-                     "🔄 Trade Block = actively shopping · ✂️ Cut candidate",
-            ),
-        },
-        disabled=["Player", "Pos", "Value"],
-    )
-    new_tags = dict(tags)
-    for _, r in edited.iterrows():
-        nm, stt = r["Player"], (r["Status"] or "")
-        if stt:
-            new_tags[nm] = stt
-        elif nm in new_tags:
-            del new_tags[nm]
-    if new_tags != tags:
-        st.session_state.player_tags = new_tags
-        save_player_tags(st.session_state.league_id, new_tags)
-        st.session_state._tag_ver = _tver + 1
-        st.rerun()
+    _h = min(560, 56 + 35 * (len(rows) + 1))
+    # Form batches all status edits into one save — no per-cell rerun / page jump.
+    with st.form(f"{editor_key}_form_{_tver}", border=False):
+        edited = st.data_editor(
+            df, use_container_width=True, hide_index=True, height=_h,
+            key=f"{editor_key}_{_tver}",
+            column_config={
+                "Value":  COL_CFG["Value"],
+                "Status": st.column_config.SelectboxColumn(
+                    "Status", options=TAG_OPTIONS, default="",
+                    help="🔒 Untouchable = never suggested in trades · ✅ Keep · "
+                         "🔄 Trade Block = actively shopping · ✂️ Cut candidate",
+                ),
+            },
+            disabled=["Player", "Pos", "Value"],
+        )
+        _submitted = st.form_submit_button("💾 Save tags", type="primary")
+    if _submitted:
+        new_tags = dict(tags)
+        for _, r in edited.iterrows():
+            nm, stt = r["Player"], (r["Status"] or "")
+            if stt:
+                new_tags[nm] = stt
+            elif nm in new_tags:
+                del new_tags[nm]
+        if new_tags != tags:
+            st.session_state.player_tags = new_tags
+            save_player_tags(st.session_state.league_id, new_tags)
+            st.session_state._tag_ver = _tver + 1
+            st.rerun()
 
 # ── Data loading (cached) ─────────────────────────────────────────────────────
 
