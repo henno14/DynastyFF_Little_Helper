@@ -481,6 +481,7 @@ POSITION_COLORS = {
 COL_CFG = {
     "Value":                        st.column_config.NumberColumn(format="%d"),
     "Rank":                         st.column_config.NumberColumn(format="%d"),
+    "Pos Rank":                     st.column_config.NumberColumn(format="%d"),
     "League Avg":                   st.column_config.NumberColumn(format="%d"),
     "Pick FC Value":                st.column_config.NumberColumn(format="%d"),
     "Rookie FC Val":                st.column_config.NumberColumn(format="%d"),
@@ -1675,12 +1676,17 @@ if page == "🏠 League Overview":
                 x="Avg Age",
                 y="Total Value",
                 text="Team",
-                color_discrete_sequence=["#2196F3"],
                 height=450,
             )
+            # Highlight My Team in gold, everyone else blue
+            _mk_colors = ["#ffc400" if t == my_team else "#2196F3" for t in df_scatter["Team"]]
+            _mk_sizes  = [17 if t == my_team else 12 for t in df_scatter["Team"]]
             fig_scatter.update_traces(
                 textposition="top center",
-                marker=dict(size=12),
+                textfont=dict(size=10),
+                marker=dict(size=_mk_sizes, color=_mk_colors,
+                            line=dict(width=1, color="rgba(0,0,0,0.3)")),
+                cliponaxis=False,
             )
 
             # Quadrant lines
@@ -1705,8 +1711,20 @@ if page == "🏠 League Overview":
                     opacity=0.7,
                 )
 
-            fig_scatter.update_layout(margin=dict(t=20, b=40), template=_chart_template)
+            # Expand axis ranges so corner quadrant labels and team names don't clip
+            _xr = (max_age - min_age) or 1
+            _yr = (max_val - min_val) or 1
+            fig_scatter.update_layout(
+                margin=dict(t=20, b=40, l=10, r=10),
+                template=_chart_template,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(range=[min_age - _xr * 0.15, max_age + _xr * 0.15]),
+                yaxis=dict(range=[min_val - _yr * 0.18, max_val + _yr * 0.18]),
+            )
             st.plotly_chart(fig_scatter, use_container_width=True)
+            if my_team:
+                st.caption(f"⭐ Gold dot = {my_team}")
         else:
             st.info("Not enough roster age data to generate scatter chart.")
 
@@ -1753,8 +1771,14 @@ elif page == "📋 Rosters":
     display_cols += ["Rank", "30d Trend", "Tier"]
 
     col_cfg = {
-        **{k: COL_CFG[k] for k in [f"{STATS_SEASON} Pts", "Rank", "Cons. Avg"] if k in dv.columns},
+        **{k: COL_CFG[k] for k in [f"{STATS_SEASON} Pts", "Rank", "Cons. Avg", "Pos Rank"] if k in dv.columns},
         val_col: COL_CFG["Value"],
+        "Roster Spot": st.column_config.Column(
+            "Roster Spot",
+            help="NFL depth-chart position from Sleeper (e.g. RB1 = first-string RB, "
+                 "LWR/RWR/SWR = left/right/slot WR, NT/DL = defensive line). Not your fantasy lineup slot — "
+                 "that's the 'Slot' column.",
+        ),
     }
 
     # Default sort: position order (QB→RB→WR→TE→…) then overall Rank (best first, unranked last)
@@ -1957,7 +1981,7 @@ elif page == "🔍 Free Agents":
     fa_display_cols += ["Rank", "30d Trend", "Tier", "Injury Notes"]
 
     fa_col_cfg = {
-        **{k: COL_CFG[k] for k in [f"{STATS_SEASON} Pts", "Rank", "Cons. Avg"] if k in dv.columns},
+        **{k: COL_CFG[k] for k in [f"{STATS_SEASON} Pts", "Rank", "Cons. Avg", "Pos Rank"] if k in dv.columns},
         val_col: COL_CFG["Value"],
     }
 
@@ -3181,7 +3205,7 @@ elif page == "🏟️ Draft Room":
 
 # ── Page: Fantasy News ───────────────────────────────────────────────────────
 elif page == "📰 Fantasy News":
-    st.caption("NFL & fantasy news from ProFootballTalk, ESPN, NFL Trade Rumors + Sleeper transaction alerts · refreshes every 30 min")
+    st.caption("NFL & fantasy news from ProFootballTalk, ESPN, NFL Trade Rumors + Sleeper transaction alerts · auto-refreshes every 30 minutes")
 
     with st.spinner("Loading news..."):
         try:
@@ -3253,7 +3277,7 @@ elif page == "📰 Fantasy News":
                 now = datetime.now(tz=timezone.utc)
                 diff_h = (now - pub).total_seconds() / 3600 if pub.timestamp() > 0 else None
                 if diff_h is None or diff_h < 0:
-                    time_str = story["published_str"] or "Recent"
+                    time_str = "Recent"   # keep format consistent — no raw RSS date strings
                 elif diff_h < 1:
                     time_str = f"{max(1, int(diff_h * 60))}m ago"
                 elif diff_h < 24:
