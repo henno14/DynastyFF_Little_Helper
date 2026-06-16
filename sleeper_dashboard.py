@@ -3200,34 +3200,49 @@ elif page == "🔄 Trade Analyzer":
     # ── Section D: Trade Calculator ──────────────────────────────────────────
     st.subheader("D · Trade Calculator")
     st.caption(
-        f"Build any trade and weigh it on **{value_source}** values. FantasyCalc values "
-        "already reflect your league's Superflex / PPR / team-count scoring. Add players "
-        "and picks to each side — totals and a fairness read update live."
+        f"Weighed on **{value_source}** values — FantasyCalc already reflects your league's "
+        "Superflex / PPR / team-count scoring. Pick the two teams, add players & picks, "
+        "and the fairness read updates live."
     )
 
-    # Universe of tradeable assets across the whole league (normalised to 0–10K)
-    _calc_assets = {}
+    # Per-team asset universe (normalised to 0–10K), so each side filters to its team
+    _team_assets = {}
     for _r2, _t2 in team_data.items():
-        _tn = _t2["name"]
+        _d = {}
         for _p2 in SKILL_POSITIONS:
             for _pl in _t2["pos_players"].get(_p2, []):
                 _v = _pl["value"] or 0
                 if _v:
-                    _calc_assets[f"{_pl['name']}  ({_p2} · {_tn}) — {_v:,}"] = _v
+                    _d[f"{_pl['name']}  ({_p2}) — {_v:,}"] = _v
         for _pk in _t2.get("picks", []):
             _v = round((_pk["value"] or 0) / 10282 * 10000)
             if _v:
-                _calc_assets[f"{_pk['label']}  (Pick · {_tn}) — {_v:,}"] = _v
-    _calc_opts = sorted(_calc_assets.keys())
+                _d[f"{_pk['label']}  (Pick) — {_v:,}"] = _v
+        _team_assets[_t2["name"]] = _d
+
+    _all_teams = sorted(_team_assets.keys())
+    _a_default = my_team if my_team in _all_teams else _all_teams[0]
+    _b_default = next((t for t in _all_teams if t != _a_default), _all_teams[0])
 
     _cc1, _cc2 = st.columns(2)
-    _side_a = _cc1.multiselect("◀ Side A sends", _calc_opts, key="calc_side_a",
-                               placeholder="Add players / picks…")
-    _side_b = _cc2.multiselect("Side B sends ▶", _calc_opts, key="calc_side_b",
-                               placeholder="Add players / picks…")
+    with _cc1:
+        st.markdown("<span style='color:#2196F3; font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
+        _team_a = st.selectbox("Team A", _all_teams, index=_all_teams.index(_a_default),
+                               key="calc_team_a", label_visibility="collapsed")
+        # Key includes the team so switching teams never carries stale options
+        _side_a = st.multiselect("Players & picks", sorted(_team_assets[_team_a].keys()),
+                                 key=f"calc_side_a_{_team_a}", placeholder=f"Add from {_team_a}…",
+                                 label_visibility="collapsed")
+    with _cc2:
+        st.markdown("<span style='color:#ff5a5f; font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
+        _team_b = st.selectbox("Team B", _all_teams, index=_all_teams.index(_b_default),
+                               key="calc_team_b", label_visibility="collapsed")
+        _side_b = st.multiselect("Players & picks", sorted(_team_assets[_team_b].keys()),
+                                 key=f"calc_side_b_{_team_b}", placeholder=f"Add from {_team_b}…",
+                                 label_visibility="collapsed")
 
-    _tot_a = sum(_calc_assets.get(x, 0) for x in _side_a)
-    _tot_b = sum(_calc_assets.get(x, 0) for x in _side_b)
+    _tot_a = sum(_team_assets[_team_a].get(x, 0) for x in _side_a)
+    _tot_b = sum(_team_assets[_team_b].get(x, 0) for x in _side_b)
 
     if not _side_a or not _side_b:
         st.info("Add at least one asset to **each** side to weigh the trade.")
@@ -3235,22 +3250,29 @@ elif page == "🔄 Trade Analyzer":
         _gap     = _tot_b - _tot_a
         _bigger  = max(_tot_a, _tot_b) or 1
         _gap_pct = abs(_gap) / _bigger * 100
-        _m1, _m2, _m3 = st.columns(3)
-        _m1.metric("Side A total", f"{_tot_a:,}")
-        _m2.metric("Side B total", f"{_tot_b:,}")
-        _m3.metric("Difference (B − A)", f"{_gap:+,}")
+        _sum     = (_tot_a + _tot_b) or 1
+        _pa      = round(_tot_a / _sum * 100)
         if _gap_pct <= 5:
-            st.success(f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart).")
+            _badge_bg, _badge_tx = "#0c2e1a", "#7ee2a8"
+            _verdict = f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
         else:
-            _winner = "Side B" if _gap > 0 else "Side A"
-            st.warning(f"↘ Favours **{_winner}** by {abs(_gap):,} ({_gap_pct:.0f}%). "
-                       f"Add a piece/pick to the lighter side to even it out.")
-        _sum = (_tot_a + _tot_b) or 1
-        _pa = round(_tot_a / _sum * 100)
+            _badge_bg, _badge_tx = "#3a2e0c", "#f5d27a"
+            _winner = _team_b if _gap > 0 else _team_a
+            _verdict = f"↘ Favours {_winner} by {abs(_gap):,} ({_gap_pct:.0f}%)"
         st.markdown(
-            f"""<div style="display:flex; height:22px; border-radius:6px; overflow:hidden; font-size:0.75rem; font-weight:600; margin-top:4px;">
-              <div style="width:{_pa}%; background:#2196F3; color:#fff; display:flex; align-items:center; justify-content:center;">A · {_pa}%</div>
-              <div style="width:{100 - _pa}%; background:#ff5a5f; color:#fff; display:flex; align-items:center; justify-content:center;">B · {100 - _pa}%</div>
+            f"""<div style="border:1px solid #2d3140; border-radius:12px; padding:16px 18px; margin-top:4px;">
+              <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+                <div><div style="font-size:0.72rem; color:#7ab4f0; text-transform:uppercase; letter-spacing:.06em;">{_team_a}</div>
+                     <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_a:,}</div></div>
+                <div style="text-align:center; align-self:center;">
+                     <span style="background:{_badge_bg}; color:{_badge_tx}; padding:5px 12px; border-radius:14px; font-size:0.82rem; font-weight:600;">{_verdict}</span></div>
+                <div style="text-align:right;"><div style="font-size:0.72rem; color:#f0a0a3; text-transform:uppercase; letter-spacing:.06em;">{_team_b}</div>
+                     <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_b:,}</div></div>
+              </div>
+              <div style="display:flex; height:20px; border-radius:6px; overflow:hidden; font-size:0.74rem; font-weight:600;">
+                <div style="width:{_pa}%; background:#2196F3; color:#fff; display:flex; align-items:center; justify-content:center;">{_pa}%</div>
+                <div style="width:{100 - _pa}%; background:#ff5a5f; color:#fff; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
+              </div>
             </div>""",
             unsafe_allow_html=True,
         )
