@@ -1489,8 +1489,7 @@ with st.sidebar:
     st.divider()
     page = st.radio("", [
         "🏠 League Overview",
-        "📋 Rosters",
-        "🎯 Draft Picks",
+        "📋 Rosters & Draft Picks",
         "🔍 Free Agents",
         "📈 Trending",
         "📰 Fantasy News",
@@ -1880,7 +1879,7 @@ if page == "🏠 League Overview":
             st.info("Not enough roster age data to generate scatter chart.")
 
 # ── Page: Rosters ─────────────────────────────────────────────────────────────
-elif page == "📋 Rosters":
+elif page == "📋 Rosters & Draft Picks":
     df_r = build_rosters_df(rosters, users, players, player_pts, pos_ranks, fc_values,
                             val_maps=val_maps, value_source=value_source)
     # All four sources are shown side-by-side now (Players page merged in), so the
@@ -2029,8 +2028,9 @@ elif page == "📋 Rosters":
     st.plotly_chart(_fig_rc, use_container_width=True)
     st.caption("#N inside a segment = that team's league rank at the position (by avg value, QB/RB/WR/TE only).")
 
-# ── Page: Draft Picks ────────────────────────────────────────────────────────
-elif page == "🎯 Draft Picks":
+    # ════════ Draft Picks (merged in — will become a sub-menu) ═══════════════
+    st.divider()
+    st.header("🎯 Draft Picks")
     df_p = build_picks_df(rosters, users, traded_ownership, drafts, slot_map, fc_picks)
 
     _curr_year   = str(datetime.now().year)
