@@ -3195,6 +3195,66 @@ elif page == "🔄 Trade Analyzer":
                     column_config={val_col: COL_CFG["Value"]},
                 )
 
+    st.divider()
+
+    # ── Section D: Trade Calculator ──────────────────────────────────────────
+    st.subheader("D · Trade Calculator")
+    st.caption(
+        f"Build any trade and weigh it on **{value_source}** values. FantasyCalc values "
+        "already reflect your league's Superflex / PPR / team-count scoring. Add players "
+        "and picks to each side — totals and a fairness read update live."
+    )
+
+    # Universe of tradeable assets across the whole league (normalised to 0–10K)
+    _calc_assets = {}
+    for _r2, _t2 in team_data.items():
+        _tn = _t2["name"]
+        for _p2 in SKILL_POSITIONS:
+            for _pl in _t2["pos_players"].get(_p2, []):
+                _v = _pl["value"] or 0
+                if _v:
+                    _calc_assets[f"{_pl['name']}  ({_p2} · {_tn}) — {_v:,}"] = _v
+        for _pk in _t2.get("picks", []):
+            _v = round((_pk["value"] or 0) / 10282 * 10000)
+            if _v:
+                _calc_assets[f"{_pk['label']}  (Pick · {_tn}) — {_v:,}"] = _v
+    _calc_opts = sorted(_calc_assets.keys())
+
+    _cc1, _cc2 = st.columns(2)
+    _side_a = _cc1.multiselect("◀ Side A sends", _calc_opts, key="calc_side_a",
+                               placeholder="Add players / picks…")
+    _side_b = _cc2.multiselect("Side B sends ▶", _calc_opts, key="calc_side_b",
+                               placeholder="Add players / picks…")
+
+    _tot_a = sum(_calc_assets.get(x, 0) for x in _side_a)
+    _tot_b = sum(_calc_assets.get(x, 0) for x in _side_b)
+
+    if not _side_a or not _side_b:
+        st.info("Add at least one asset to **each** side to weigh the trade.")
+    else:
+        _gap     = _tot_b - _tot_a
+        _bigger  = max(_tot_a, _tot_b) or 1
+        _gap_pct = abs(_gap) / _bigger * 100
+        _m1, _m2, _m3 = st.columns(3)
+        _m1.metric("Side A total", f"{_tot_a:,}")
+        _m2.metric("Side B total", f"{_tot_b:,}")
+        _m3.metric("Difference (B − A)", f"{_gap:+,}")
+        if _gap_pct <= 5:
+            st.success(f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart).")
+        else:
+            _winner = "Side B" if _gap > 0 else "Side A"
+            st.warning(f"↘ Favours **{_winner}** by {abs(_gap):,} ({_gap_pct:.0f}%). "
+                       f"Add a piece/pick to the lighter side to even it out.")
+        _sum = (_tot_a + _tot_b) or 1
+        _pa = round(_tot_a / _sum * 100)
+        st.markdown(
+            f"""<div style="display:flex; height:22px; border-radius:6px; overflow:hidden; font-size:0.75rem; font-weight:600; margin-top:4px;">
+              <div style="width:{_pa}%; background:#2196F3; color:#fff; display:flex; align-items:center; justify-content:center;">A · {_pa}%</div>
+              <div style="width:{100 - _pa}%; background:#ff5a5f; color:#fff; display:flex; align-items:center; justify-content:center;">B · {100 - _pa}%</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
 # ── Page: Draft Room ─────────────────────────────────────────────────────────
 elif page == "🏟️ Draft Room":
     curr_year = str(datetime.now().year)
