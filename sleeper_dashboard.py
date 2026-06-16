@@ -185,6 +185,15 @@ def plural(n, singular, plural_form=None):
     word = singular if n == 1 else (plural_form or singular + "s")
     return f"{n:,} {word}"
 
+def dash_na(df):
+    """Display copy where object-column None/NaN render as '—' instead of the
+    literal string 'None'. Numeric columns are left alone (NumberColumn shows blank)."""
+    df = df.copy()
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].where(df[c].notna(), "—")
+    return df
+
 def player_name(p, fallback=""):
     """Return 'First Last' from a Sleeper player dict, or fallback if empty."""
     return f"{p.get('first_name', '')} {p.get('last_name', '')}".strip() or fallback
@@ -538,6 +547,10 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
     non-editable columns only, per st.data_editor behaviour)."""
     favs = st.session_state.favorites
     dv = dv.copy().reset_index(drop=True)
+    if dv.empty:
+        st.info("No players match your filters. Try clearing the search or changing position.")
+        return
+    dv = dash_na(dv)   # object-column None/NaN → '—' (no literal 'None')
     dv.insert(0, "⭐", dv[name_col].map(lambda n: n in favs))
     cfg = {**(col_cfg or {}), "⭐": st.column_config.CheckboxColumn("⭐", default=False)}
     disabled = [c for c in dv.columns if c != "⭐"]
@@ -564,6 +577,7 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
             st.session_state.favorites = new_favs
             save_favorites(new_favs)
             st.session_state._fav_ver = _ver + 1   # rotate editor → drop stale row deltas
+            st.session_state._toast_msg = f"{plural(len(new_favs), 'favourite')} saved"
             st.rerun()
 
 
@@ -613,6 +627,13 @@ def tag_editor(roster_players, editor_key):
             st.session_state.player_tags = new_tags
             save_player_tags(st.session_state.league_id, new_tags)
             st.session_state._tag_ver = _tver + 1
+            # Confirm what landed — the native dropdown can silently no-op on a misclick
+            _counts = {}
+            for _v in new_tags.values():
+                _counts[_v] = _counts.get(_v, 0) + 1
+            _summary = ", ".join(f"{_n} {TAG_DISPLAY.get(_k, _k).split(' ', 1)[-1]}"
+                                 for _k, _n in _counts.items()) or "none"
+            st.session_state._toast_msg = f"Tags saved · {_summary}"
             st.rerun()
 
 # ── Data loading (cached) ─────────────────────────────────────────────────────
@@ -1492,6 +1513,10 @@ def _refresh_all_data():
                "_data_warmed_for"]:   # re-show the loading spinner during the real re-fetch
         st.session_state.pop(_k, None)
 
+# Flush any pending save confirmation (set before a st.rerun on the previous run)
+if st.session_state.get("_toast_msg"):
+    st.toast(st.session_state.pop("_toast_msg"), icon="💾")
+
 # ── Page: League Overview ─────────────────────────────────────────────────────
 if page == "🏠 League Overview":
     st.title(league.get("name", "Dynasty League"))
@@ -1913,10 +1938,10 @@ elif page == "📋 Rosters":
     ).reset_index(drop=True)
 
     st.dataframe(
-        dv[display_cols], use_container_width=True, hide_index=True,
+        dash_na(dv[display_cols]), use_container_width=True, hide_index=True,
         column_config=col_cfg,
     )
-    st.caption(f"{len(dv):,} players shown · Value source: **{value_source}**")
+    st.caption(f"{plural(len(dv), 'player')} shown · Value source: **{value_source}**")
 
     # ── Player status tags (My Team) ──────────────────────────────────────────
     st.divider()
@@ -1931,7 +1956,7 @@ elif page == "📋 Rosters":
                 for _pos in SKILL_POSITIONS for p in _my_pp.get(_pos, [])
             ]
             _my_players.sort(key=lambda x: x["value"] or 0, reverse=True)
-            st.caption(f"Tagging **{my_team}** · 🔒 Untouchable players are never suggested in trades · shared across Rosters & Trade Analyzer")
+            st.caption(f"Tagging **{my_team.strip()}** · 🔒 Untouchable players are never suggested in trades · shared across Rosters & Trade Analyzer")
             tag_editor(_my_players, "tags_rosters")
 
     # ── Roster composition bar chart ──────────────────────────────────────────
@@ -2080,7 +2105,7 @@ elif page == "🎯 Draft Picks":
             column_config={"Value": COL_CFG["Value"]},
         )
     _hl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv["Team"] == my_team).any() else ""
-    st.caption(f"{len(dv)} picks shown · 🟢 Surplus = pick-rich · 🟡 Average · 🔴 Deficit = pick-poor{_hl_note}")
+    st.caption(f"{plural(len(dv), 'pick')} shown · 🟢 Surplus = pick-rich · 🟡 Average · 🔴 Deficit = pick-poor{_hl_note}")
 
 # ── Page: Free Agents ────────────────────────────────────────────────────────
 elif page == "🔍 Free Agents":
@@ -2339,7 +2364,7 @@ elif page == "🌟 2026 Rookies":
 
     fav_grid(dv, "Player", "rk_fav_grid",
              col_cfg={val_col: COL_CFG["Value"], "Overall Rank": COL_CFG["Rank"]})
-    st.caption(f"{len(dv)} rookies shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(dv), 'rookie')} shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the ⭐ box to favourite")
 
 # ── Page: Scoring Rules ──────────────────────────────────────────────────────
 elif page == "📊 Scoring Rules":
@@ -2364,7 +2389,7 @@ elif page == "📊 Scoring Rules":
 # ── Page: Settings ───────────────────────────────────────────────────────────
 elif page == "⚙️ Settings":
     st.title("Settings")
-    st.caption("Your team, value source, favourites and tags are saved automatically for this league.")
+    st.caption("Your team, value source, favourites and tags are kept for this session. (Cross-device sign-in is coming soon.)")
 
     # ── Data & League controls (moved off the sidebar) ───────────────────────
     st.subheader("Data & League")
@@ -2502,7 +2527,7 @@ elif page == "👥 Players":
         )
     fav_grid(dv_pl, "Player", "pl_fav_grid", col_cfg=_pl_col_cfg, styler_fn=_pl_styler)
     _pl_note = f" · gold = {my_team}" if my_team and (dv_pl["Owner"] == my_team).any() else ""
-    st.caption(f"{len(dv_pl):,} players shown · All values normalised to 0–10K scale · tick the ⭐ box to favourite{_pl_note}")
+    st.caption(f"{plural(len(dv_pl), 'player')} shown · All values normalised to 0–10K scale · tick the ⭐ box to favourite{_pl_note}")
 
 # ── Page: Trending ───────────────────────────────────────────────────────────
 elif page == "📈 Trending":
@@ -2535,6 +2560,7 @@ elif page == "📈 Trending":
         "Rank":                COL_CFG["Rank"],
         f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
     }
+    dv = dash_na(dv)
     if my_team and "Dynasty Team" in dv.columns and (dv["Dynasty Team"] == my_team).any():
         _tr_hl = "background-color: rgba(255, 196, 0, 0.18)"
         _tr_styled = dv.style.apply(
@@ -2579,7 +2605,7 @@ elif page == "🔄 Trade Analyzer":
             for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
         ]
         _ta_players.sort(key=lambda x: x["value"] or 0, reverse=True)
-        st.caption(f"Tagging **{sel_ta_team}** · 🔒 Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
+        st.caption(f"Tagging **{sel_ta_team.strip()}** · 🔒 Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
         tag_editor(_ta_players, "tags_trade")
 
     # ── Your trade block (players tagged 🔄 Trade) ────────────────────────────
@@ -3417,7 +3443,7 @@ elif page == "🏟️ Draft Room":
     else:
         fav_grid(df_pool, "Rookie", "dr_pool_fav_grid",
                  col_cfg={"Value": COL_CFG["Value"]})
-    st.caption(f"{len(df_pool)} rookies still available · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(df_pool), 'rookie')} still available · tick the ⭐ box to favourite")
 
 # ── Page: Fantasy News ───────────────────────────────────────────────────────
 elif page == "📰 Fantasy News":
@@ -3457,7 +3483,7 @@ elif page == "📰 Fantasy News":
             )
         ]
 
-        st.caption(f"{len(filtered)} stories shown · Last fetched: {datetime.now().strftime('%H:%M')}")
+        st.caption(f"{plural(len(filtered), 'story', 'stories')} shown · Last fetched: {datetime.now().strftime('%H:%M')}")
         st.divider()
 
         # ── Source colour badges — use border+text colour (theme-neutral) ────────
