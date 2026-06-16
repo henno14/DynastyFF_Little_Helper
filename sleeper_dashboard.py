@@ -1886,6 +1886,7 @@ elif page == "📋 Rosters & Draft Picks":
     # single dynamic active-value column is redundant — drop it.
     df_r = df_r.drop(columns=["Value"]).rename(columns={"_cons_avg": "Cons. Avg"})
 
+    st.header("👥 Players")
     col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
     _r_team_opts = sorted(df_r["Team"].unique().tolist())
     _r_default = st.session_state.get("_sticky_r_team")
@@ -1900,12 +1901,14 @@ elif page == "📋 Rosters & Draft Picks":
     sel_slots = col_c.multiselect("Slot",      ["Starter", "Bench", "Taxi"],            key="r_slot",
                                   placeholder="All slots")
     name_srch = col_d.text_input("Search player name", key="r_name", placeholder="e.g. Ja'Marr Chase")
+    r_fav_only = st.checkbox("⭐ Favourites only", key="r_fav_only")
 
     mask = pd.Series(True, index=df_r.index)
     if sel_teams: mask &= df_r["Team"].isin(sel_teams)
     if sel_pos:   mask &= df_r["Pos"].isin(sel_pos)
     if sel_slots: mask &= df_r["Slot"].isin(sel_slots)
     if name_srch: mask &= df_r["Player"].str.contains(name_srch, case=False, na=False)
+    if r_fav_only: mask &= df_r["Player"].isin(st.session_state.favorites)
     dv = df_r[mask]
 
     # All four sources side-by-side (merged from the old Players page) + Cons. Avg
@@ -1937,96 +1940,24 @@ elif page == "📋 Rosters & Draft Picks":
     fav_grid(dv[display_cols], "Player", "r_fav_grid", col_cfg=col_cfg)
     st.caption(f"{plural(len(dv), 'player')} shown · all sources normalised to 0–10K · tick the ⭐ box to favourite")
 
-    # ── Player status tags (My Team) ──────────────────────────────────────────
+    # ── Player Tags (My Team) — its own section (future sub-menu) ─────────────
     st.divider()
-    with st.expander("🏷️ Tag your players (Untouchable / Keep / Trade / Cut)", expanded=False):
-        if not my_team:
-            st.info("Set **My Team** in the sidebar to tag your players.")
-        else:
-            _my_rid = team_name_to_rid.get(my_team)
-            _my_pp  = team_data.get(_my_rid, {}).get("pos_players", {}) if _my_rid else {}
-            _my_players = [
-                {"name": p["name"], "pos": _pos, "value": p["value"]}
-                for _pos in SKILL_POSITIONS for p in _my_pp.get(_pos, [])
-            ]
-            _my_players.sort(key=lambda x: x["value"] or 0, reverse=True)
-            st.caption(f"Tagging **{my_team.strip()}** · 🔒 Untouchable players are never suggested in trades · shared across Rosters & Trade Analyzer")
-            tag_editor(_my_players, "tags_rosters")
-
-    # ── Roster composition bar chart ──────────────────────────────────────────
-    st.divider()
-    st.subheader("Roster Composition by Position")
-    st.caption("Full league view — unaffected by filters above.")
-
-    _POS_ORDER  = ["QB", "RB", "WR", "TE", "DL", "LB", "DB", "DEF", "K"]
-    _POS_COLORS = {
-        "QB":  "#3b82f6",
-        "RB":  "#22c55e",
-        "WR":  "#f59e0b",
-        "TE":  "#a855f7",
-        "DL":  "#0d9488",   # teal
-        "LB":  "#b45309",   # amber-brown
-        "DB":  "#be185d",   # rose
-        "DEF": "#334155",   # slate
-        "K":   "#cbd5e1",   # light grey
-    }
-
-    _rc_df = (
-        df_r[df_r["Pos"].isin(_POS_ORDER)]
-        .groupby(["Team", "Pos"])
-        .size()
-        .reset_index(name="Players")
-    )
-
-    # League positional rank (value-based, QB/RB/WR/TE only) shown inside each segment
-    def _rc_rank(team_name, pos):
-        _rid = team_name_to_rid.get(team_name)
-        if _rid is None:
-            return ""
-        _rank = team_data.get(_rid, {}).get("pos_league_rank", {}).get(pos)
-        return f"#{_rank}" if _rank else ""
-    _rc_df["Rank"] = _rc_df.apply(lambda r: _rc_rank(r["Team"], r["Pos"]), axis=1)
-
-    # Sort teams by total roster size descending
-    _team_order = (
-        _rc_df.groupby("Team")["Players"].sum()
-        .sort_values(ascending=False)
-        .index.tolist()
-    )
-
-    _fig_rc = px.bar(
-        _rc_df,
-        x="Team",
-        y="Players",
-        color="Pos",
-        barmode="stack",
-        text="Rank",
-        color_discrete_map=_POS_COLORS,
-        category_orders={"Pos": _POS_ORDER, "Team": _team_order},
-        template="plotly_dark" if _theme == "Dark" else "plotly_white",
-        hover_data={"Team": True, "Pos": True, "Players": True, "Rank": True},
-    )
-    _fig_rc.update_layout(
-        height=420,
-        legend_title="Position",
-        xaxis_title=None,
-        yaxis_title="Players",
-        xaxis_tickangle=-30,
-        margin=dict(t=10, b=10, l=0, r=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        uniformtext_minsize=9,
-        uniformtext_mode="show",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-    )
-    _fig_rc.update_traces(
-        marker_line_width=0,
-        textposition="inside",
-        insidetextanchor="middle",
-        textfont=dict(size=11, color="white"),
-    )
-    st.plotly_chart(_fig_rc, use_container_width=True)
-    st.caption("#N inside a segment = that team's league rank at the position (by avg value, QB/RB/WR/TE only).")
+    st.header("🏷️ Player Tags")
+    if not my_team:
+        st.info("Set **My Team** in the sidebar to tag your players.")
+    else:
+        _my_rid = team_name_to_rid.get(my_team)
+        _my_pp  = team_data.get(_my_rid, {}).get("pos_players", {}) if _my_rid else {}
+        _my_players = [
+            {"name": p["name"], "pos": _pos, "value": p["value"]}
+            for _pos in SKILL_POSITIONS for p in _my_pp.get(_pos, [])
+        ]
+        _my_players.sort(key=lambda x: x["value"] or 0, reverse=True)
+        _r_block = [p for p in _my_players if st.session_state.player_tags.get(p["name"]) == "Trade"]
+        if _r_block:
+            st.markdown("**🔄 Your Trade Block:** " + " · ".join(f"{p['name']} ({p['pos']})" for p in _r_block))
+        st.caption(f"Tagging **{my_team.strip()}** · 🔒 Untouchable players are never suggested in trades · shared with Trade Analyzer")
+        tag_editor(_my_players, "tags_rosters")
 
     # ════════ Draft Picks (merged in — will become a sub-menu) ═══════════════
     st.divider()
@@ -2114,6 +2045,7 @@ elif page == "🔍 Free Agents":
     else:
         df_fa = df_fa.drop(columns=["_cons_avg"])
 
+    st.header("🔍 League Current Free Agents")
     col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
 
     sel_fa_pos    = col_a.multiselect("Positions", sorted(df_fa["Pos"].unique().tolist()), key="fa_pos",
@@ -2249,11 +2181,8 @@ elif page == "🔍 Free Agents":
                 if _fa_for_pos.empty:
                     st.info(f"No free agent {_pos}s currently available.")
                 else:
-                    st.dataframe(
-                        _fa_for_pos[_pickup_display_cols(_fa_for_pos)],
-                        use_container_width=True, hide_index=True,
-                        column_config=_pickup_col_cfg,
-                    )
+                    fav_grid(_fa_for_pos[_pickup_display_cols(_fa_for_pos)], "Player",
+                             f"pickup_fav_{_pos}", col_cfg=_pickup_col_cfg)
 
         with _pickup_tabs[-1]:
             _fa_best = (
@@ -2267,11 +2196,7 @@ elif page == "🔍 Free Agents":
             _best_cols += [f"{STATS_SEASON} Pts", "Tier"]
             _best_cols = [c for c in _best_cols if c in _fa_best.columns]
             st.caption("Top 10 free agents by value across all positions.")
-            st.dataframe(
-                _fa_best[_best_cols],
-                use_container_width=True, hide_index=True,
-                column_config=_pickup_col_cfg,
-            )
+            fav_grid(_fa_best[_best_cols], "Player", "pickup_fav_best", col_cfg=_pickup_col_cfg)
 
         st.divider()
 
@@ -2299,6 +2224,10 @@ elif page == "🔍 Free Agents":
                 _drop_score = _val_score + _pts_score + _inj_score + _age_score
 
                 _reasons = []
+                # Players you've tagged ✂️ Cut always surface at the top of the list
+                if st.session_state.player_tags.get(_pp["name"]) == "Cut":
+                    _drop_score += 1000
+                    _reasons.append("✂️ Tagged Cut")
                 if _val < _pos_avg_val * 0.5:             _reasons.append("Low value")
                 if _pts < 50:                             _reasons.append("Low pts")
                 if _status in ("Out", "IR", "PUP"):       _reasons.append(_status)
@@ -2382,7 +2311,6 @@ elif page == "🌟 2026 Rookies":
              col_cfg={val_col: COL_CFG["Value"], "Overall Rank": COL_CFG["Rank"]})
     st.caption(f"{plural(len(dv), 'rookie')} shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the ⭐ box to favourite")
 
-# ── Page: Scoring Rules ──────────────────────────────────────────────────────
 # ── Page: Settings (includes Scoring Rules section) ──────────────────────────
 elif page == "⚙️ Settings":
     st.title("Settings")
@@ -2393,6 +2321,7 @@ elif page == "⚙️ Settings":
     _dc1, _dc2, _dc3 = st.columns([2, 1, 1])
     _dc1.markdown(
         f"**League:** {league.get('name', '—')}  \n"
+        f"**Sleeper league ID:** `{league_id}`  \n"
         f"**Value source:** {value_source}  \n"
         f"<span style='color:grey'>Last loaded: {datetime.now().strftime('%H:%M')}</span>",
         unsafe_allow_html=True,
@@ -2434,6 +2363,15 @@ elif page == "⚙️ Settings":
     with col_s2:
         st.subheader("Theme")
         st.info("🌙 **Dark theme** — Dynasty FF Lil' Helper is dark-only for now. A polished light theme is on the roadmap.")
+
+    st.divider()
+    st.subheader("Draft Room")
+    st.slider(
+        "Need Reach Limit", min_value=0, max_value=40, value=15, step=5, format="%d%%",
+        key="reach_limit_pct",
+        help="How far simulated teams reach for positional need over Best Player Available "
+             "in the Draft Room. 0% = pure BPA, 40% = heavily need-driven. (Also on the Draft Room page.)",
+    )
 
     # ════════ Scoring Rules (merged in — will become a sub-menu) ═════════════
     st.divider()
@@ -3211,17 +3149,15 @@ elif page == "🏟️ Draft Room":
     confirmed    = st.session_state.draft_confirmed   # {pick_label: rookie_name}
     rookie_names = sorted([r["name"] for r in fc_rookies if r.get("name")])
 
-    # ── Simulation controls ───────────────────────────────────────────────────
-    with st.expander("⚙️ Simulation Settings", expanded=False):
-        st.caption("**Need Reach Limit** — how far a team will reach for positional need over Best Player Available. 0% = pure BPA. 40% = heavily need-driven.")
-        need_reach_limit = st.slider(
-            "Need Reach Limit",
-            min_value=0, max_value=40, value=15, step=5,
-            format="%d%%",
-            key="dr_reach_limit",
-        ) / 100
-        _mode = "Strict (near-BPA)" if need_reach_limit < 0.10 else ("Balanced" if need_reach_limit <= 0.20 else "Need-heavy (aggressive reaches)")
-        st.caption(f"Mode: **{_mode}** at {int(need_reach_limit*100)}%")
+    # ── Simulation control: Need Reach Limit (shared with Settings) ───────────
+    st.caption("**Need Reach Limit** — how far a team reaches for positional need over Best Player "
+               "Available. 0% = pure BPA · 40% = heavily need-driven. Also adjustable in Settings.")
+    need_reach_limit = st.slider(
+        "Need Reach Limit", min_value=0, max_value=40, value=15, step=5,
+        format="%d%%", key="reach_limit_pct",
+    ) / 100
+    _mode = "Strict (near-BPA)" if need_reach_limit < 0.10 else ("Balanced" if need_reach_limit <= 0.20 else "Need-heavy (aggressive reaches)")
+    st.caption(f"Mode: **{_mode}** at {int(need_reach_limit * 100)}%")
 
     # ── Build sorted picks list for current year ──────────────────────────────
     df_all_picks = build_picks_df(rosters, users, traded_ownership, drafts, slot_map, fc_picks)
