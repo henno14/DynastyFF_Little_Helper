@@ -2853,8 +2853,8 @@ elif page == "🔄 Trade Analyzer":
                 "Fit Score":              round(_fit),
                 f"Their {_my_need} Supply": _supply_lbl,
                 f"Their Need for {_my_surplus}": _need_lbl,
-                "Sample: You Give":       f"{_my_give_name}  ({_my_give_val:,})" if _my_give_val else _my_give_name,
-                "Sample: You Get":        f"{_their_give_name}  ({_their_give_val:,})" if _their_give_val else _their_give_name,
+                "Sample: You Give":       f"{_my_give_name}  ({_my_surplus} · {_my_give_val:,})" if _my_give_val else _my_give_name,
+                "Sample: You Get":        f"{_their_give_name}  ({_my_need} · {_their_give_val:,})" if _their_give_val else _their_give_name,
                 "Value Diff":             _vdiff_str,
             })
 
@@ -2908,14 +2908,45 @@ elif page == "🔄 Trade Analyzer":
         if ns > ss and ns >= 20:  return "🔴 Deficit"
         return "🟡 Average"
 
-    if not surplus_pos or not need_pos or surplus_pos == need_pos:
-        st.info("No clear trade opportunities identified — positional values are well-balanced.")
+    # Two toggles: shop the explicit Trade Block, and whether to include Untouchables
+    _sa_c1, _sa_c2 = st.columns(2)
+    _shop_block = _sa_c1.checkbox(
+        "🔄 Shop my Trade Block", value=bool(_trade_block),
+        help="Drive suggestions from players you tagged 🔄 Trade, instead of auto-detected surplus.",
+        key="ta_shop_block",
+    )
+    _incl_untouch = _sa_c2.checkbox(
+        "Include Untouchables", value=False,
+        help="Also include players tagged 🔒 Untouchable in the suggestions.",
+        key="ta_incl_untouch",
+    )
+    _need_for_targets = need_pos if need_pos in SKILL_POSITIONS else None
+
+    if (not _shop_block or not _trade_block) and (not surplus_pos or not need_pos or surplus_pos == need_pos):
+        st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players 🔄 Trade to shop them directly.")
     else:
-        # Drop any suggestion that would trade away an Untouchable player
-        suggestions = [s for s in td.get("suggestions", [])
-                       if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
-        if not suggestions:
-            st.info("Not enough data to generate suggestions (or all surplus players are tagged Untouchable).")
+        if _shop_block and _trade_block:
+            # Suggestions driven by YOUR trade block: shop each tagged player for your need
+            suggestions = []
+            for _bp in _trade_block:
+                _tg = sorted(
+                    [p for p in all_players_by_pos.get(_need_for_targets, []) if p["on_team_rid"] != rid],
+                    key=lambda p: abs((p["value"] or 0) - (_bp["value"] or 0)),
+                )[:3] if _need_for_targets else []
+                suggestions.append({
+                    "type": "player",
+                    "asset": {"name": _bp["name"], "value": _bp["value"]},
+                    "asset_pos": _bp["pos"],
+                    "want_pos": _need_for_targets or "—",
+                    "targets": _tg,
+                })
+        else:
+            suggestions = td.get("suggestions", [])
+            if not _incl_untouch:   # default: never offer an Untouchable player
+                suggestions = [s for s in suggestions
+                               if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
+        if not suggestions or not any(s.get("targets") for s in suggestions):
+            st.info("Not enough data to generate suggestions — tag players 🔄 Trade, or check you have a clear positional need.")
         else:
             # ── Top 5 ideal player-for-player targets ─────────────────────────
             # Score each candidate: +2 if target has surplus of need_pos,
@@ -2936,7 +2967,7 @@ elif page == "🔄 Trade Analyzer":
                     _vdiff = abs(t["value"] - _asset["value"])
                     _candidates.append({
                         "Trade Away":                f"{_asset['name']}  ({_apos})",
-                        "Target Player":             t["name"],
+                        "Target Player":             f"{t['name']}  ({_want_pos})",
                         "Currently On":              t["on_team"],
                         val_col:                  t["value"],
                         "Value Diff":                f"{t['value'] - _asset['value']:+,}",
@@ -2986,7 +3017,7 @@ elif page == "🔄 Trade Analyzer":
 
                     st.dataframe(
                         pd.DataFrame([{
-                            "Player":                    t["name"],
+                            "Player":                    f"{t['name']}  ({want_pos})",
                             "Currently On":              t["on_team"],
                             val_col:                  t["value"],
                             "Value Diff":                f"{t['value'] - asset_val:+,}",
