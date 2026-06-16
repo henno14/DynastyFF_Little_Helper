@@ -185,6 +185,49 @@ def plural(n, singular, plural_form=None):
     word = singular if n == 1 else (plural_form or singular + "s")
     return f"{n:,} {word}"
 
+# ── Supabase email sign-in (optional; guest mode when not configured) ─────────
+@st.cache_resource(show_spinner=False)
+def _sb_auth_client():
+    """GoTrue client for email one-time-code sign-in (publishable key).
+    Returns None if Supabase isn't configured — the app then runs guest-only."""
+    try:
+        from supabase import create_client
+        url  = st.secrets["SUPABASE_URL"]
+        anon = st.secrets.get("SUPABASE_ANON_KEY") or st.secrets["SUPABASE_KEY"]
+        return create_client(url, anon)
+    except Exception as e:
+        print(f"[INFO] Supabase auth not configured ({e}); running guest-only.")
+        return None
+
+def auth_available():
+    return _sb_auth_client() is not None
+
+def auth_send_code(email):
+    """Email a 6-digit sign-in code. Returns (ok, error_message)."""
+    c = _sb_auth_client()
+    if not c:
+        return False, "Sign-in isn't available right now."
+    try:
+        c.auth.sign_in_with_otp({"email": (email or "").strip(),
+                                 "options": {"should_create_user": True}})
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def auth_verify_code(email, code):
+    """Verify the emailed code. Returns the signed-in email, or None."""
+    c = _sb_auth_client()
+    if not c:
+        return None
+    try:
+        res = c.auth.verify_otp({"email": (email or "").strip(),
+                                 "token": (code or "").strip(), "type": "email"})
+        if res and getattr(res, "user", None):
+            return res.user.email
+    except Exception as e:
+        print(f"[WARN] verify_otp failed: {e}")
+    return None
+
 def dash_na(df):
     """Display copy where object-column None/NaN render as '—' instead of the
     literal string 'None'. Numeric columns are left alone (NumberColumn shows blank)."""
@@ -1408,6 +1451,44 @@ with st.sidebar:
     if st.button("🏠 Home", use_container_width=True, key="nav_home"):
         st.session_state.nav_page = "🏠 League Overview"
         st.rerun()
+
+    # ── Account: optional email sign-in (saves settings across devices) ───────
+    if auth_available():
+        if st.session_state.get("auth_email"):
+            st.caption(f"✅ Signed in · {st.session_state.auth_email}")
+            if st.button("Sign out", use_container_width=True, key="auth_signout"):
+                for _k in ("auth_email", "_auth_code_sent", "_auth_pending_email"):
+                    st.session_state.pop(_k, None)
+                st.rerun()
+        else:
+            with st.expander("🔑 Sign in to save", expanded=False):
+                if not st.session_state.get("_auth_code_sent"):
+                    _ae = st.text_input("Email", key="auth_email_input", placeholder="you@email.com")
+                    if st.button("Send code", use_container_width=True, key="auth_send"):
+                        ok, err = auth_send_code(_ae)
+                        if ok:
+                            st.session_state._auth_code_sent = True
+                            st.session_state._auth_pending_email = (_ae or "").strip()
+                            st.rerun()
+                        else:
+                            st.error(f"Couldn't send code: {err}")
+                else:
+                    st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
+                    _code = st.text_input("6-digit code", key="auth_code_input")
+                    _c1, _c2 = st.columns(2)
+                    if _c1.button("Verify", use_container_width=True, key="auth_verify"):
+                        _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
+                        if _em:
+                            st.session_state.auth_email = _em
+                            st.session_state.pop("_auth_code_sent", None)
+                            st.session_state._toast_msg = f"Signed in as {_em}"
+                            st.rerun()
+                        else:
+                            st.error("Invalid or expired code — try again.")
+                    if _c2.button("Cancel", use_container_width=True, key="auth_cancel"):
+                        st.session_state.pop("_auth_code_sent", None)
+                        st.rerun()
+
     st.divider()
     st.subheader(f"🏈 {league.get('name', 'Dynasty League')}")
     st.caption(f"Sleeper · {league.get('season', '')} · {league.get('total_rosters', '?')} teams")
