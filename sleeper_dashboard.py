@@ -723,7 +723,11 @@ def build_rosters_df(rosters, users, players, player_pts, pos_ranks, fc_values, 
                 "Rank":          rank,
                 "30d Trend":     trend_disp,
                 "Tier":          fc.get("tier"),
-                # Always-computed consensus average (used for side-by-side comparison)
+                # All sources side-by-side (merged in from the old Players page)
+                "FC D Value":    get_active_value(pid, fc_values, val_maps or {}, "FC Dynasty"),
+                "DN Value":      get_active_value(pid, fc_values, val_maps or {}, "DN Dynasty"),
+                "KTC Value":     get_active_value(pid, fc_values, val_maps or {}, "KTC"),
+                "DP Value":      get_active_value(pid, fc_values, val_maps or {}, "DP Values"),
                 "_cons_avg":     get_active_value(pid, fc_values, val_maps or {}, "Consensus Avg"),
             })
     return pd.DataFrame(rows)
@@ -1488,7 +1492,6 @@ with st.sidebar:
         "📋 Rosters",
         "🎯 Draft Picks",
         "🔍 Free Agents",
-        "👥 Players",
         "📈 Trending",
         "📰 Fantasy News",
         "🔄 Trade Analyzer",
@@ -1880,7 +1883,9 @@ if page == "🏠 League Overview":
 elif page == "📋 Rosters":
     df_r = build_rosters_df(rosters, users, players, player_pts, pos_ranks, fc_values,
                             val_maps=val_maps, value_source=value_source)
-    df_r = df_r.rename(columns={"Value": val_col})
+    # All four sources are shown side-by-side now (Players page merged in), so the
+    # single dynamic active-value column is redundant — drop it.
+    df_r = df_r.drop(columns=["Value"]).rename(columns={"_cons_avg": "Cons. Avg"})
 
     col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
     _r_team_opts = sorted(df_r["Team"].unique().tolist())
@@ -1904,23 +1909,16 @@ elif page == "📋 Rosters":
     if name_srch: mask &= df_r["Player"].str.contains(name_srch, case=False, na=False)
     dv = df_r[mask]
 
-    # Resolve _cons_avg column: rename to "Cons. Avg" unless the active source already IS consensus
-    if value_source != "Consensus Avg":
-        df_r = df_r.rename(columns={"_cons_avg": "Cons. Avg"})
-    else:
-        df_r = df_r.drop(columns=["_cons_avg"])
-    dv = df_r[mask]  # re-apply mask after column changes
+    # All four sources side-by-side (merged from the old Players page) + Cons. Avg
+    _src_cols = ["FC D Value", "DN Value", "KTC Value", "DP Value", "Cons. Avg"]
+    display_cols = (["Team", "Owner", "Slot", "Player", "Pos", "NFL Team", "Roster Spot",
+                     "Age", "Exp", "Status", f"{STATS_SEASON} Pts", "Pos Rank"]
+                    + _src_cols + ["Rank", "30d Trend", "Tier"])
 
-    # Build display columns dynamically based on selected source
-    display_cols = ["Team", "Owner", "Slot", "Player", "Pos", "NFL Team", "Roster Spot",
-                    "Age", "Exp", "Status", f"{STATS_SEASON} Pts", "Pos Rank", val_col]
-    if value_source != "Consensus Avg":
-        display_cols.append("Cons. Avg")   # side-by-side comparison
-    display_cols += ["Rank", "30d Trend", "Tier"]
-
+    _num = {c: st.column_config.NumberColumn(format="%d") for c in _src_cols}
     col_cfg = {
-        **{k: COL_CFG[k] for k in [f"{STATS_SEASON} Pts", "Rank", "Cons. Avg", "Pos Rank"] if k in dv.columns},
-        val_col: COL_CFG["Value"],
+        **_num,
+        **{k: COL_CFG[k] for k in [f"{STATS_SEASON} Pts", "Rank", "Pos Rank"] if k in dv.columns},
         "Roster Spot": st.column_config.Column(
             "Roster Spot",
             help="NFL depth-chart position from Sleeper (e.g. RB1 = first-string RB, "
@@ -1937,11 +1935,8 @@ elif page == "📋 Rosters":
                         else pd.to_numeric(col, errors="coerce").fillna(999999),
     ).reset_index(drop=True)
 
-    st.dataframe(
-        dash_na(dv[display_cols]), use_container_width=True, hide_index=True,
-        column_config=col_cfg,
-    )
-    st.caption(f"{plural(len(dv), 'player')} shown · Value source: **{value_source}**")
+    fav_grid(dv[display_cols], "Player", "r_fav_grid", col_cfg=col_cfg)
+    st.caption(f"{plural(len(dv), 'player')} shown · all sources normalised to 0–10K · tick the ⭐ box to favourite")
 
     # ── Player status tags (My Team) ──────────────────────────────────────────
     st.divider()
@@ -2439,96 +2434,6 @@ elif page == "⚙️ Settings":
         st.info("🌙 **Dark theme** — Dynasty FF Lil' Helper is dark-only for now. A polished light theme is on the roadmap.")
 
 # ── Page: Players ─────────────────────────────────────────────────────────────
-elif page == "👥 Players":
-    st.title("Players")
-    st.caption("All rostered players with values from every source side by side. All values normalised to 0–10K scale.")
-
-    user_map_pl = {u["user_id"]: u for u in users}
-    pid_to_owner = {}
-    pid_to_slot  = {}
-    for r in rosters:
-        oid  = r.get("owner_id") or ""
-        u    = user_map_pl.get(oid, {})
-        team = (u.get("metadata") or {}).get("team_name") or u.get("display_name") or f"Team {r['roster_id']}"
-        starters = set(r.get("starters") or [])
-        taxi     = set(r.get("taxi") or [])
-        for pid in (r.get("players") or []):
-            pid_to_owner[pid] = team
-            if pid in starters:
-                pid_to_slot[pid] = "Starter"
-            elif pid in taxi:
-                pid_to_slot[pid] = "Taxi"
-            else:
-                pid_to_slot[pid] = "Bench"
-
-    _dn_pl  = val_maps.get("dn",  {})
-    _ktc_pl = val_maps.get("ktc", {})
-    _dp_pl  = val_maps.get("dp",  {})
-
-    def _norm_fc_pl(v):
-        return round(v / 10282 * 10000) if v else None
-
-    pl_rows = []
-    for pid, owner in pid_to_owner.items():
-        p   = players.get(pid, {})
-        pos = p.get("position") or "—"
-        if pos == "K":
-            continue
-        fc  = fc_values.get(pid, {})
-        exp = p.get("years_exp")
-        pl_rows.append({
-            "Player":              player_name(p) or pid,
-            "NFL Team":            p.get("team") or "FA",
-            "Pos":                 pos,
-            "Roster Spot":         pid_to_slot.get(pid, "Bench"),
-            "Age":                 p.get("age"),
-            "Exp":                 "Rookie" if exp == 0 else (f"{exp}y" if exp else "—"),
-            "Status":              p.get("injury_status") or "Active",
-            f"{STATS_SEASON} Pts": player_pts.get(pid),
-            "Pos Rank":            pos_ranks.get(pid),
-            "FC D Value":          _norm_fc_pl(fc.get("value")),
-            "DN Value":            _dn_pl.get(pid,  {}).get("value"),
-            "KTC Value":           _ktc_pl.get(pid, {}).get("value"),
-            "DP Value":            _dp_pl.get(pid,  {}).get("value"),
-            "Owner":               owner,
-        })
-
-    df_pl = pd.DataFrame(pl_rows)
-
-    col_pa, col_pb, col_pc, col_pd = st.columns([2, 2, 2, 3])
-    sel_pl_pos  = col_pa.multiselect("Position",    sorted(df_pl["Pos"].unique().tolist()),   key="pl_pos",  placeholder="All positions")
-    sel_pl_slot = col_pb.multiselect("Roster Spot", ["Starter", "Bench", "Taxi"],             key="pl_slot", placeholder="All slots")
-    sel_pl_team = col_pc.multiselect("Team",        sorted(df_pl["Owner"].unique().tolist()), key="pl_team", placeholder="All teams")
-    pl_srch     = col_pd.text_input("Search player", key="pl_name", placeholder="e.g. Ja'Marr Chase")
-
-    pl_fav_only = st.checkbox("⭐ Favourites only", key="pl_fav_only")
-
-    pl_mask = pd.Series(True, index=df_pl.index)
-    if sel_pl_pos:  pl_mask &= df_pl["Pos"].isin(sel_pl_pos)
-    if sel_pl_slot: pl_mask &= df_pl["Roster Spot"].isin(sel_pl_slot)
-    if sel_pl_team: pl_mask &= df_pl["Owner"].isin(sel_pl_team)
-    if pl_srch:     pl_mask &= df_pl["Player"].str.contains(pl_srch, case=False, na=False)
-    if pl_fav_only: pl_mask &= df_pl["Player"].isin(st.session_state.favorites)
-    dv_pl = df_pl[pl_mask].sort_values("FC D Value", ascending=False, na_position="last")
-
-    _pl_col_cfg = {
-        "FC D Value":          st.column_config.NumberColumn(format="%d"),
-        "DN Value":            st.column_config.NumberColumn(format="%d"),
-        "KTC Value":           st.column_config.NumberColumn(format="%d"),
-        "DP Value":            st.column_config.NumberColumn(format="%d"),
-        f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
-        "Pos Rank":            COL_CFG["Rank"],
-    }
-    _pl_styler = None
-    if my_team and (dv_pl["Owner"] == my_team).any():
-        _pl_hl = "background-color: rgba(255, 196, 0, 0.18)"
-        _pl_styler = lambda d: d.style.apply(
-            lambda row: [_pl_hl if row["Owner"] == my_team else "" for _ in row], axis=1
-        )
-    fav_grid(dv_pl, "Player", "pl_fav_grid", col_cfg=_pl_col_cfg, styler_fn=_pl_styler)
-    _pl_note = f" · gold = {my_team}" if my_team and (dv_pl["Owner"] == my_team).any() else ""
-    st.caption(f"{plural(len(dv_pl), 'player')} shown · All values normalised to 0–10K scale · tick the ⭐ box to favourite{_pl_note}")
-
 # ── Page: Trending ───────────────────────────────────────────────────────────
 elif page == "📈 Trending":
     with st.spinner("Loading trending data..."):
