@@ -1403,6 +1403,11 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
+    # Brand acts as "home" — jumps back to League Overview (interim until the real
+    # logo image, which we'll make the clickable target).
+    if st.button("🏠 Home", use_container_width=True, key="nav_home"):
+        st.session_state.nav_page = "🏠 League Overview"
+        st.rerun()
     st.divider()
     st.subheader(f"🏈 {league.get('name', 'Dynasty League')}")
     st.caption(f"Sleeper · {league.get('season', '')} · {league.get('total_rosters', '?')} teams")
