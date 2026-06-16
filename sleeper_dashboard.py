@@ -180,6 +180,11 @@ def save_player_tags(league_id, tags):
     elif os.path.exists(path):
         os.remove(path)
 
+def plural(n, singular, plural_form=None):
+    """'1 player', '2 players', '1 story' — count + correctly-pluralised noun."""
+    word = singular if n == 1 else (plural_form or singular + "s")
+    return f"{n:,} {word}"
+
 def player_name(p, fallback=""):
     """Return 'First Last' from a Sleeper player dict, or fallback if empty."""
     return f"{p.get('first_name', '')} {p.get('last_name', '')}".strip() or fallback
@@ -2106,12 +2111,17 @@ elif page == "🔍 Free Agents":
     if min_val > 0:      mask &= df_fa[val_col].notna() & (df_fa[val_col] >= min_val)
     if fa_srch:          mask &= df_fa["Player"].str.contains(fa_srch, case=False, na=False)
     if fa_fav_only:      mask &= df_fa["Player"].isin(st.session_state.favorites)
-    # Sort by Rank then Tier ascending (lower = more valuable); unranked players fall last
-    dv = df_fa[mask].sort_values(
-        by=["Rank", "Tier"],
-        key=lambda col: pd.to_numeric(col, errors="coerce"),
-        na_position="last",
-    ).reset_index(drop=True)
+    # Sort by the ACTIVE VALUE (the number users see) descending — Tier as tiebreaker.
+    # The source "Rank" field is missing/unreliable for fringe FAs, so it floated
+    # low-value players to the top; value-first ordering fixes that. No-value rows last.
+    dv = df_fa[mask].copy()
+    dv["_vsort"] = pd.to_numeric(dv[val_col], errors="coerce")
+    dv["_tsort"] = pd.to_numeric(dv["Tier"], errors="coerce")
+    dv = dv.sort_values(by=["_vsort", "_tsort"], ascending=[False, True],
+                        na_position="last").reset_index(drop=True)
+    # Derive Rank from the value ordering so Rank and value never disagree
+    dv["Rank"] = dv["_vsort"].rank(method="min", ascending=False).astype("Int64")
+    dv = dv.drop(columns=["_vsort", "_tsort"])
 
     # Build display columns dynamically based on selected source
     fa_display_cols = ["Player", "Pos", "NFL Team", "Age", "Exp", "Status",
@@ -2126,7 +2136,7 @@ elif page == "🔍 Free Agents":
     }
 
     fav_grid(dv[fa_display_cols], "Player", "fa_fav_grid", col_cfg=fa_col_cfg)
-    st.caption(f"{len(dv):,} free agents shown · sorted by Rank then Tier (best first) · Value source: **{value_source}** · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(dv), 'free agent')} shown · sorted by {value_source} value (best first) · tick the ⭐ box to favourite")
 
     # ── Pickup & Drop Advisor ─────────────────────────────────────────────────
     st.divider()
