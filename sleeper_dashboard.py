@@ -3067,9 +3067,17 @@ elif page == "🔄 Trade Analyzer":
             options=[a["label"] for a in asset_options],
             key="man_asset",
         )
+        # Default Target to the team's priority need; if that equals the default
+        # asset's position, fall back to the next-biggest need (never QB-for-QB).
+        _needs_ranked = [p for p, _ in sorted(td.get("need_scores", {}).items(),
+                                              key=lambda x: x[1], reverse=True)]
+        _default_asset_pos = asset_options[0]["pos"] if asset_options else None
+        _target_default = next((p for p in _needs_ranked if p != _default_asset_pos), None)
+        _target_idx = SKILL_POSITIONS.index(_target_default) if _target_default in SKILL_POSITIONS else 0
         sel_target_pos = col_b.selectbox(
             "Target position",
             options=SKILL_POSITIONS,
+            index=_target_idx,
             key="man_target_pos",
         )
 
