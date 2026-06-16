@@ -1374,6 +1374,7 @@ if "favorites" not in st.session_state:
 if st.session_state.get("_player_tags_league") != league_id:
     st.session_state.player_tags = load_player_tags(league_id)
     st.session_state._player_tags_league = league_id
+    st.session_state._auto_cut_done = set()   # reset auto-Cut tracker per league
 
 # ── Sidebar: identity + value source (rendered early — value_source drives the
 #    data pipeline below; team names derive straight from rosters/users) ───────
@@ -2317,6 +2318,22 @@ elif page == "🔍 Free Agents":
                 })
 
         _drop_rows.sort(key=lambda x: x["_score"], reverse=True)
+
+        # Auto-tag genuine drop candidates (score ≥ 50: clearly below positional value
+        # AND low production) as ✂️ Cut — but only for YOUR team, once per session, and
+        # never overwriting a tag you've set or cleared yourself.
+        _auto_cut_n = 0
+        if my_team and _adv_team == my_team:
+            _auto_done = st.session_state.setdefault("_auto_cut_done", set())
+            for _r in _drop_rows:
+                _nm = _r["Player"]
+                if _r["_score"] >= 50 and _nm not in st.session_state.player_tags and _nm not in _auto_done:
+                    st.session_state.player_tags[_nm] = "Cut"
+                    _auto_done.add(_nm)
+                    _auto_cut_n += 1
+            if _auto_cut_n:
+                save_player_tags(league_id, st.session_state.player_tags)
+
         for _r in _drop_rows:
             del _r["_score"]
 
@@ -2335,6 +2352,11 @@ elif page == "🔍 Free Agents":
                     f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
                 },
             )
+            if my_team and _adv_team == my_team:
+                _cut_note = (f" · auto-tagged {plural(_auto_cut_n, 'player')} ✂️ Cut this session"
+                             if _auto_cut_n else "")
+                st.caption("Strong drop candidates are auto-tagged ✂️ Cut on your roster — "
+                           f"edit anytime on Rosters / Trade Analyzer; your changes are kept.{_cut_note}")
 
 # ── Page: 2026 Rookies ───────────────────────────────────────────────────────
 elif page == "🌟 2026 Rookies":
