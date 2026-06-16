@@ -1497,7 +1497,6 @@ with st.sidebar:
         "🔄 Trade Analyzer",
         "🌟 2026 Rookies",
         "🏟️ Draft Room",
-        "📊 Scoring Rules",
         "⚙️ Settings",
     ], label_visibility="collapsed", key="nav_page")
 
@@ -2384,26 +2383,7 @@ elif page == "🌟 2026 Rookies":
     st.caption(f"{plural(len(dv), 'rookie')} shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the ⭐ box to favourite")
 
 # ── Page: Scoring Rules ──────────────────────────────────────────────────────
-elif page == "📊 Scoring Rules":
-    df_sc = build_scoring_df(scoring)
-
-    col_a, col_b = st.columns([2, 3])
-    sel_cats = col_a.multiselect("Categories", sorted(df_sc["Category"].unique().tolist()), key="sc_cat",
-                                 placeholder="All categories")
-    stat_srch = col_b.text_input("Search stat name", key="sc_stat", placeholder="e.g. Passing TD")
-
-    mask = pd.Series(True, index=df_sc.index)
-    if sel_cats:  mask &= df_sc["Category"].isin(sel_cats)
-    if stat_srch: mask &= df_sc["Stat"].str.contains(stat_srch, case=False, na=False)
-    dv = df_sc[mask]
-
-    st.dataframe(
-        dv, use_container_width=True, hide_index=True,
-        column_config={"Points": COL_CFG["Points"]},
-    )
-    st.caption(f"{len(dv)} active scoring rules")
-
-# ── Page: Settings ───────────────────────────────────────────────────────────
+# ── Page: Settings (includes Scoring Rules section) ──────────────────────────
 elif page == "⚙️ Settings":
     st.title("Settings")
     st.caption("Your team, value source, favourites and tags are kept for this session. (Cross-device sign-in is coming soon.)")
@@ -2455,7 +2435,22 @@ elif page == "⚙️ Settings":
         st.subheader("Theme")
         st.info("🌙 **Dark theme** — Dynasty FF Lil' Helper is dark-only for now. A polished light theme is on the roadmap.")
 
-# ── Page: Players ─────────────────────────────────────────────────────────────
+    # ════════ Scoring Rules (merged in — will become a sub-menu) ═════════════
+    st.divider()
+    st.header("📊 Scoring Rules")
+    df_sc = build_scoring_df(scoring)
+    _sc1, _sc2 = st.columns([2, 3])
+    sel_cats  = _sc1.multiselect("Categories", sorted(df_sc["Category"].unique().tolist()), key="sc_cat",
+                                 placeholder="All categories")
+    stat_srch = _sc2.text_input("Search stat name", key="sc_stat", placeholder="e.g. Passing TD")
+    _sc_mask = pd.Series(True, index=df_sc.index)
+    if sel_cats:  _sc_mask &= df_sc["Category"].isin(sel_cats)
+    if stat_srch: _sc_mask &= df_sc["Stat"].str.contains(stat_srch, case=False, na=False)
+    _sc_dv = df_sc[_sc_mask]
+    st.dataframe(_sc_dv, use_container_width=True, hide_index=True,
+                 column_config={"Points": COL_CFG["Points"]})
+    st.caption(plural(len(_sc_dv), "active scoring rule"))
+
 # ── Page: Trending ───────────────────────────────────────────────────────────
 elif page == "📈 Trending":
     with st.spinner("Loading trending data..."):
