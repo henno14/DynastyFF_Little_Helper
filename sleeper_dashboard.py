@@ -676,6 +676,30 @@ def load_trending():
     return adds, drops
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_user_leagues(handle):
+    """Resolve a Sleeper username to their NFL leagues (most recent season with any).
+    Returns list of {league_id, name, season, total_rosters}; [] if not found."""
+    handle = (handle or "").strip()
+    if not handle:
+        return []
+    try:
+        user = get(f"{BASE}/user/{handle}")
+        uid  = user.get("user_id") if user else None
+        if not uid:
+            return []
+        for _yr in (datetime.now().year, datetime.now().year - 1):
+            lgs = get(f"{BASE}/user/{uid}/leagues/nfl/{_yr}")
+            if lgs:
+                return [{"league_id": l["league_id"], "name": l.get("name", "League"),
+                         "season": l.get("season"), "total_rosters": l.get("total_rosters")}
+                        for l in lgs]
+        return []
+    except Exception as e:
+        print(f"[WARN] fetch_user_leagues({handle}): {e}")
+        return []
+
+
 # ── DataFrame builders ────────────────────────────────────────────────────────
 
 def build_rosters_df(rosters, users, players, player_pts, pos_ranks, fc_values, val_maps=None, value_source="FC Dynasty"):
@@ -1316,37 +1340,91 @@ def normalize_dim(values_dict):
 
 # ── App layout ────────────────────────────────────────────────────────────────
 
-# ── League selection gate (multi-league) ─────────────────────────────────────
+# ── Step 1 · Entry / login screen ─────────────────────────────────────────────
 if "league_id" not in st.session_state:
-    # Bootstrap: last-used league (guest session / signed-in store), else built-in default
-    st.session_state.league_id = load_last_league() or LEAGUE_ID or None
+    st.session_state.league_id = None   # login-first: always start at the entry screen
 
 if not st.session_state.get("league_id"):
     st.title("🏈 Dynasty FF Lil' Helper")
     st.caption(
-        "Your dynasty trade brain — blends FantasyCalc, DynastyNerds, KeepTradeCut & DynastyProcess "
-        "into one set of values, plus trade analysis, draft tools, and a free-agent advisor."
+        "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
+        "in one, plus trade analysis, draft tools, and a free-agent advisor."
     )
-    st.caption(
-        "Enter your **Sleeper league ID** to get started. You can find it in your league's URL: "
-        "`sleeper.com/leagues/<league_id>/...`"
-    )
-    _lid_in = st.text_input("Sleeper League ID", key="landing_lid",
-                            placeholder="e.g. 1322995024962543616")
-    if st.button("Load League", type="primary", key="landing_go"):
-        _lid_clean = (_lid_in or "").strip()
-        _lg_check = None
-        if _lid_clean.isdigit():
-            try:
-                _lg_check = get(f"{BASE}/league/{_lid_clean}")
-            except Exception:
-                _lg_check = None
-        if _lg_check and _lg_check.get("league_id"):
-            st.session_state.league_id = _lg_check["league_id"]
-            save_last_league(_lg_check["league_id"])
-            st.rerun()
+    _tab_find, _tab_signin = st.tabs(["🔎 Find my league", "🔑 Sign in"])
+
+    with _tab_signin:
+        if not auth_available():
+            st.info("Sign-in isn't available right now — use **Find my league**.")
         else:
-            st.error("Could not load that league — check the ID and try again.")
+            st.caption("Signed-in members jump straight back to their league and saved settings.")
+            if not st.session_state.get("_auth_code_sent"):
+                _ae = st.text_input("Email", key="entry_auth_email", placeholder="you@email.com")
+                if st.button("Send code", key="entry_auth_send"):
+                    ok, err = auth_send_code(_ae)
+                    if ok:
+                        st.session_state._auth_code_sent = True
+                        st.session_state._auth_pending_email = (_ae or "").strip()
+                        st.rerun()
+                    else:
+                        st.error(f"Couldn't send code: {err}")
+            else:
+                st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
+                _code = st.text_input("6-digit code", key="entry_auth_code")
+                _ec1, _ec2 = st.columns(2)
+                if _ec1.button("Verify & sign in", type="primary", key="entry_auth_verify"):
+                    _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
+                    if _em:
+                        st.session_state.auth_email = _em
+                        st.session_state.pop("_auth_code_sent", None)
+                        _ll = load_last_league()      # jump straight in if they have a saved league
+                        if _ll:
+                            st.session_state.league_id = _ll
+                        st.session_state._toast_msg = f"Signed in as {_em}"
+                        st.rerun()
+                    else:
+                        st.error("Invalid or expired code — try again.")
+                if _ec2.button("Cancel", key="entry_auth_cancel"):
+                    st.session_state.pop("_auth_code_sent", None)
+                    st.rerun()
+
+    with _tab_find:
+        st.caption("Enter your **Sleeper username** (we'll find your leagues) — or paste a **league ID** directly.")
+        _in = st.text_input("Sleeper username or league ID", key="entry_input",
+                            placeholder="e.g. henno14  or  1322995024962543616")
+        if st.button("Find →", type="primary", key="entry_find"):
+            _q = (_in or "").strip()
+            st.session_state.pop("_entry_err", None)
+            if _q.isdigit() and len(_q) >= 15:        # looks like a league ID
+                _lg = None
+                try: _lg = get(f"{BASE}/league/{_q}")
+                except Exception: _lg = None
+                if _lg and _lg.get("league_id"):
+                    st.session_state._found_leagues = [{
+                        "league_id": _lg["league_id"], "name": _lg.get("name", "League"),
+                        "season": _lg.get("season"), "total_rosters": _lg.get("total_rosters")}]
+                else:
+                    st.session_state._found_leagues = []
+                    st.session_state._entry_err = "No league found with that ID."
+            else:                                      # treat as a Sleeper username
+                _lgs = fetch_user_leagues(_q)
+                st.session_state._found_leagues = _lgs
+                if not _lgs:
+                    st.session_state._entry_err = f"No NFL leagues found for '{_q}'. Check the username, or paste a league ID."
+            st.rerun()
+
+        if st.session_state.get("_entry_err"):
+            st.error(st.session_state._entry_err)
+        _found = st.session_state.get("_found_leagues") or []
+        if _found:
+            _labels = {f"{l['name']}  ·  {l.get('season','')}  ·  {l.get('total_rosters','?')} teams": l["league_id"]
+                       for l in _found}
+            _pick = st.selectbox("Pick your league", list(_labels.keys()), key="entry_pick")
+            if st.button("Open league →", type="primary", key="entry_open"):
+                st.session_state.league_id = _labels[_pick]
+                save_last_league(_labels[_pick])
+                st.session_state.pop("_found_leagues", None)
+                st.session_state.pop("_entry_err", None)
+                st.rerun()
     st.stop()
 
 league_id = st.session_state.league_id
@@ -1373,6 +1451,38 @@ with _load_spin:
     ktc_map      = build_ktc_sleeper_map(ktc_by_id, cw_ktc, players)
     val_maps     = {"dn": dn_map, "ktc": ktc_map, "dp": dp_map}
 st.session_state._data_warmed_for = league_id
+
+# ── Step 2 · Setup (My Team + Value Source) — skipped for returning signed-in users ──
+if st.session_state.get("_onboarded_for") != league_id:
+    _lp0 = load_league_prefs(league_id)
+    if _signed_in() and _lp0.get("team"):
+        st.session_state._onboarded_for = league_id   # returning member → straight in
+    else:
+        st.title(f"🏈 {league.get('name', 'Your league')}")
+        st.caption("Quick setup — you can change either of these anytime from the sidebar.")
+        _umap0 = {u["user_id"]: u for u in users}
+        _teams0 = sorted({
+            ((_umap0.get(r.get("owner_id") or "", {}).get("metadata") or {}).get("team_name")
+             or _umap0.get(r.get("owner_id") or "", {}).get("display_name")
+             or f"Team {r['roster_id']}") for r in rosters
+        })
+        _setup_team = st.selectbox("Which team is yours?", ["—"] + _teams0, key="setup_team")
+        _setup_vs = st.selectbox(
+            "Value source", ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"],
+            key="setup_vs",
+            help="Which ranking source drives every value in the app. You can switch anytime.",
+        )
+        _sc1, _sc2 = st.columns([1, 4])
+        if _sc1.button("Continue →", type="primary", key="setup_go"):
+            save_league_prefs(league_id, value_source=_setup_vs,
+                              team=(_setup_team if _setup_team != "—" else None))
+            st.session_state.pop("_prefs_seeded_for", None)   # sidebar re-seeds from these
+            st.session_state._onboarded_for = league_id
+            st.rerun()
+        if _sc2.button("Switch league", key="setup_switch"):
+            st.session_state.league_id = None
+            st.rerun()
+        st.stop()
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
 st.session_state.setdefault("app_theme", "System Default")
@@ -1432,7 +1542,7 @@ with st.sidebar:
         if st.session_state.get("auth_email"):
             st.caption(f"✅ Signed in · {st.session_state.auth_email}")
             if st.button("Sign out", use_container_width=True, key="auth_signout"):
-                for _k in ("auth_email", "_auth_code_sent", "_auth_pending_email"):
+                for _k in ("auth_email", "_auth_code_sent", "_auth_pending_email", "_onboarded_for"):
                     st.session_state.pop(_k, None)
                 st.session_state.league_id = None              # back to the entry screen
                 st.session_state.nav_page   = "🏠 League Overview"  # land on Overview next time
