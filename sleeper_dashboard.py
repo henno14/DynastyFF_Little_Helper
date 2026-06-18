@@ -11,6 +11,7 @@ import sys
 import os
 import json
 import re
+import base64
 import contextlib
 import requests
 import feedparser
@@ -28,28 +29,131 @@ from sleeper_dynasty_tracker import (
     SCORING_LABELS, DYNASTY_POSITIONS,
 )
 
+_APP_DIR    = os.path.dirname(os.path.abspath(__file__))
+_ASSETS_DIR = os.path.join(_APP_DIR, "assets")
+
+
+def _asset(name):
+    """Read an asset file (SVG/text) from assets/ — returns '' if missing."""
+    try:
+        with open(os.path.join(_ASSETS_DIR, name), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+_LOGO_HORIZONTAL = _asset("dynasty-little-helper-horizontal.svg")
+_LOGO_STACKED    = _asset("dynasty-little-helper-logo.svg")
+_LOGO_FAVICON    = _asset("dynasty-little-helper-favicon.svg")
+
 st.set_page_config(
     page_title="Dynasty FF Lil' Helper",
-    page_icon="🏈",
+    page_icon=os.path.join(_ASSETS_DIR, "dynasty-little-helper-favicon.svg"),
     layout="wide",
 )
 
+# NOTE: deliberately NOT using st.logo() — it hijacks the collapsed-sidebar
+# expand control (which broke "reopen sidebar" in Safari). The brand logo is
+# rendered as the clickable Home button inside the sidebar instead (see below).
+# The bulk of theming lives in .streamlit/config.toml; the CSS below adds the
+# modern type, chrome-hiding, and card/sidebar polish config.toml can't express.
+
 st.markdown("""
 <style>
-    /* Tighten main content padding */
-    .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
-    /* Sidebar styling */
-    [data-testid="stSidebar"] { background-color: #1a1a2e; }
-    [data-testid="stSidebar"] * { color: #e0e0e0 !important; }
-    [data-testid="stSidebar"] .stRadio label {
-        font-size: 0.95rem; padding: 4px 0; cursor: pointer;
-    }
-    /* Metric cards — theme-neutral: just round the corners, let Streamlit handle bg/fg */
-    [data-testid="stMetric"] { border-radius: 8px; }
+/* ── Modern type (loaded from Google Fonts; config.toml names them too) ─────── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+/* Brand tokens — single source of truth. Light values live alongside as a
+   future flip (see config.toml note); dark is forced for the beta. */
+:root{
+  --brand-coral:#ff5a5f; --brand-coral-hi:#ff7a7e; --brand-coral-deep:#e23d42;
+  --brand-gold:#e6b422;  --brand-gold-hi:#f2c94c;  --brand-green:#157a3d;
+  --surface:#171c26; --surface-2:#1b212c; --border:#262d3a;
+  --text:#fafafa; --muted:#9aa4b2;
+}
+
+html, body, .stApp, [class*="css"]{
+  font-family:'Inter',ui-sans-serif,system-ui,-apple-system,sans-serif;
+}
+h1,h2,h3,h4,[data-testid="stMetricValue"]{
+  font-family:'Space Grotesk','Inter',sans-serif; letter-spacing:-0.01em;
+}
+h1{ font-weight:700; } h2,h3{ font-weight:600; }
+
+/* ── Hide Streamlit chrome — only the noise (deploy / menu / status / footer /
+   decoration). Do NOT hide the whole toolbar/header: the sidebar-expand control
+   (stExpandSidebar) lives up there, and hiding stToolbar is what broke "reopen
+   sidebar" in Safari + Chrome (you could collapse but not expand). ──────────── */
+[data-testid="stToolbarActions"], [data-testid="stMainMenu"],
+[data-testid="stAppDeployButton"], [data-testid="stStatusWidget"],
+[data-testid="stDecoration"], footer{
+  display:none !important;
+}
+[data-testid="stHeader"]{ background:transparent; }
+/* Belt-and-suspenders: always keep the collapsed-sidebar expand control usable */
+[data-testid="stExpandSidebar"]{
+  display:flex !important; visibility:visible !important; opacity:1 !important;
+}
+
+/* ── Layout breathing room ──────────────────────────────────────────────────── */
+.block-container{ padding-top:2.2rem; padding-bottom:3rem; max-width:1500px; }
+h1{ margin-bottom:.1em; }
+
+/* ── Metric cards — branded: gradient surface + coral→gold accent rail ──────── */
+[data-testid="stMetric"]{
+  position:relative; overflow:hidden;
+  background:linear-gradient(180deg,#1a2130 0%, #141a25 100%);
+  border:1px solid #2a3344; border-radius:16px;
+  padding:15px 18px 13px 21px; box-shadow:0 2px 10px rgba(0,0,0,.28);
+  transition:border-color .15s ease, transform .1s ease;
+}
+[data-testid="stMetric"]::after{
+  content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
+  background:linear-gradient(180deg,var(--brand-coral),var(--brand-gold));
+}
+[data-testid="stMetric"]:hover{ border-color:#3a4658; transform:translateY(-1px); }
+[data-testid="stMetricLabel"]{
+  color:var(--muted) !important; font-weight:600;
+  text-transform:uppercase; letter-spacing:.05em; font-size:.72rem;
+}
+[data-testid="stMetricValue"]{ color:var(--text) !important; font-weight:600; }
+
+/* ── Buttons ────────────────────────────────────────────────────────────────── */
+.stButton>button, .stDownloadButton>button{
+  border-radius:10px; font-weight:600;
+  transition:transform .04s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.stButton>button:hover{ border-color:var(--brand-coral); }
+.stButton>button:active{ transform:translateY(1px); }
+button[kind="primary"]{ box-shadow:0 2px 8px rgba(255,90,95,.22); }
+button[kind="primary"]:hover{ box-shadow:0 5px 18px rgba(255,90,95,.4); transform:translateY(-1px); }
+
+/* ── Tabs — coral selected state ────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"]{ gap:6px; }
+.stTabs [aria-selected="true"]{ color:var(--brand-coral) !important; }
+.stTabs [data-baseweb="tab-highlight"]{ background:var(--brand-coral) !important; }
+
+/* ── Sidebar nav: radio → pill list with a coral active rail ────────────────── */
+[data-testid="stSidebar"] [role="radiogroup"]{ gap:1px; }
+[data-testid="stSidebar"] [role="radiogroup"] label{
+  border-radius:9px; padding:7px 11px; margin:1px 0; width:100%;
+  cursor:pointer; transition:background .12s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label > div:first-child{ display:none; } /* hide radio dot */
+[data-testid="stSidebar"] [role="radiogroup"] label:hover{ background:rgba(255,255,255,.05); }
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){
+  background:rgba(255,90,95,.14); box-shadow:inset 3px 0 0 var(--brand-coral);
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p{
+  color:var(--brand-coral-hi) !important; font-weight:700;
+}
+
+/* ── Surfaces: dataframes / expanders / inputs get the rounded, bordered look ── */
+[data-testid="stDataFrame"]{ border-radius:12px; overflow:hidden; }
+[data-testid="stExpander"]{ border-radius:12px; }
+hr{ border-color:var(--border); }
 </style>
 """, unsafe_allow_html=True)
-
-_APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── Persistence — all settings route through _store_get/_store_set (below):
 #   Supabase per-user when signed in, session-state when a guest.
@@ -570,7 +674,7 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
     _h = min(560, 56 + 35 * (len(dv) + 1))
     with st.form(f"{editor_key}_form_{_ver}", border=False):
         edited = st.data_editor(
-            data, use_container_width=True, hide_index=True, height=_h,
+            data, width="stretch", hide_index=True, height=_h,
             key=f"{editor_key}_{_ver}", column_config=cfg, disabled=disabled,
         )
         _submitted = st.form_submit_button("💾 Save favourites", type="primary")
@@ -610,7 +714,7 @@ def tag_editor(roster_players, editor_key):
     # Form batches all status edits into one save — no per-cell rerun / page jump.
     with st.form(f"{editor_key}_form_{_tver}", border=False):
         edited = st.data_editor(
-            df, use_container_width=True, hide_index=True, height=_h,
+            df, width="stretch", hide_index=True, height=_h,
             key=f"{editor_key}_{_tver}",
             column_config={
                 "Value":  COL_CFG["Value"],
@@ -1345,90 +1449,102 @@ if "league_id" not in st.session_state:
     st.session_state.league_id = None   # login-first: always start at the entry screen
 
 if not st.session_state.get("league_id"):
-    st.title("🏈 Dynasty FF Lil' Helper")
-    st.caption(
-        "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
-        "in one, plus trade analysis, draft tools, and a free-agent advisor."
-    )
-    # Signed in but no saved league yet (first sign-in) → guide them to pick one
-    if st.session_state.get("auth_email"):
-        st.success(f"✅ Signed in as **{st.session_state.auth_email}** — pick your league below "
-                   "to get started (your settings will save automatically from now on).")
-    _tab_find, _tab_signin = st.tabs(["🔎 Find my league", "🔑 Sign in"])
-
-    with _tab_signin:
-        if not auth_available():
-            st.info("Sign-in isn't available right now — use **Find my league**.")
+    # Centre + constrain the entry form so it reads like an intentional login card
+    _el, _ec, _er = st.columns([1, 1.4, 1])
+    with _ec:
+        if _LOGO_HORIZONTAL:
+            st.markdown(
+                f'<div style="display:flex; justify-content:center; margin:0.5rem 0 0.25rem;">'
+                f'<div style="width:min(440px,80%);">{_LOGO_HORIZONTAL}</div></div>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.caption("Signed-in members jump straight back to their league and saved settings.")
-            if not st.session_state.get("_auth_code_sent"):
-                _ae = st.text_input("Email", key="entry_auth_email", placeholder="you@email.com")
-                if st.button("Send code", key="entry_auth_send"):
-                    ok, err = auth_send_code(_ae)
-                    if ok:
-                        st.session_state._auth_code_sent = True
-                        st.session_state._auth_pending_email = (_ae or "").strip()
-                        st.rerun()
-                    else:
-                        st.error(f"Couldn't send code: {err}")
+            st.title("🏈 Dynasty FF Lil' Helper")
+        st.markdown(
+            '<p style="text-align:center; color:#9aa4b2; max-width:620px; margin:0 auto 0.5rem;">'
+            "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
+            "in one, plus trade analysis, draft tools, and a free-agent advisor.</p>",
+            unsafe_allow_html=True,
+        )
+        # Signed in but no saved league yet (first sign-in) → guide them to pick one
+        if st.session_state.get("auth_email"):
+            st.success(f"✅ Signed in as **{st.session_state.auth_email}** — pick your league below "
+                       "to get started (your settings will save automatically from now on).")
+        _tab_find, _tab_signin = st.tabs(["🔎 Find my league", "🔑 Sign in"])
+
+        with _tab_signin:
+            if not auth_available():
+                st.info("Sign-in isn't available right now — use **Find my league**.")
             else:
-                st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
-                _code = st.text_input("6-digit code", key="entry_auth_code")
-                _ec1, _ec2 = st.columns(2)
-                if _ec1.button("Verify & sign in", type="primary", key="entry_auth_verify"):
-                    _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
-                    if _em:
-                        st.session_state.auth_email = _em
-                        st.session_state.pop("_auth_code_sent", None)
-                        _ll = load_last_league()      # jump straight in if they have a saved league
-                        if _ll:
-                            st.session_state.league_id = _ll
-                        st.session_state._toast_msg = f"Signed in as {_em}"
-                        st.rerun()
-                    else:
-                        st.error("Invalid or expired code — try again.")
-                if _ec2.button("Cancel", key="entry_auth_cancel"):
-                    st.session_state.pop("_auth_code_sent", None)
-                    st.rerun()
-
-    with _tab_find:
-        st.caption("Enter your **Sleeper username** (we'll find your leagues) — or paste a **league ID** directly.")
-        _in = st.text_input("Sleeper username or league ID", key="entry_input",
-                            placeholder="e.g. henno14  or  1322995024962543616")
-        if st.button("Find →", type="primary", key="entry_find"):
-            _q = (_in or "").strip()
-            st.session_state.pop("_entry_err", None)
-            if _q.isdigit() and len(_q) >= 15:        # looks like a league ID
-                _lg = None
-                try: _lg = get(f"{BASE}/league/{_q}")
-                except Exception: _lg = None
-                if _lg and _lg.get("league_id"):
-                    st.session_state._found_leagues = [{
-                        "league_id": _lg["league_id"], "name": _lg.get("name", "League"),
-                        "season": _lg.get("season"), "total_rosters": _lg.get("total_rosters")}]
+                st.caption("Signed-in members jump straight back to their league and saved settings.")
+                if not st.session_state.get("_auth_code_sent"):
+                    _ae = st.text_input("Email", key="entry_auth_email", placeholder="you@email.com")
+                    if st.button("Send code", key="entry_auth_send"):
+                        ok, err = auth_send_code(_ae)
+                        if ok:
+                            st.session_state._auth_code_sent = True
+                            st.session_state._auth_pending_email = (_ae or "").strip()
+                            st.rerun()
+                        else:
+                            st.error(f"Couldn't send code: {err}")
                 else:
-                    st.session_state._found_leagues = []
-                    st.session_state._entry_err = "No league found with that ID."
-            else:                                      # treat as a Sleeper username
-                _lgs = fetch_user_leagues(_q)
-                st.session_state._found_leagues = _lgs
-                if not _lgs:
-                    st.session_state._entry_err = f"No NFL leagues found for '{_q}'. Check the username, or paste a league ID."
-            st.rerun()
+                    st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
+                    _code = st.text_input("6-digit code", key="entry_auth_code")
+                    _ec1, _ec2 = st.columns(2)
+                    if _ec1.button("Verify & sign in", type="primary", key="entry_auth_verify"):
+                        _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
+                        if _em:
+                            st.session_state.auth_email = _em
+                            st.session_state.pop("_auth_code_sent", None)
+                            _ll = load_last_league()      # jump straight in if they have a saved league
+                            if _ll:
+                                st.session_state.league_id = _ll
+                            st.session_state._toast_msg = f"Signed in as {_em}"
+                            st.rerun()
+                        else:
+                            st.error("Invalid or expired code — try again.")
+                    if _ec2.button("Cancel", key="entry_auth_cancel"):
+                        st.session_state.pop("_auth_code_sent", None)
+                        st.rerun()
 
-        if st.session_state.get("_entry_err"):
-            st.error(st.session_state._entry_err)
-        _found = st.session_state.get("_found_leagues") or []
-        if _found:
-            _labels = {f"{l['name']}  ·  {l.get('season','')}  ·  {l.get('total_rosters','?')} teams": l["league_id"]
-                       for l in _found}
-            _pick = st.selectbox("Pick your league", list(_labels.keys()), key="entry_pick")
-            if st.button("Open league →", type="primary", key="entry_open"):
-                st.session_state.league_id = _labels[_pick]
-                save_last_league(_labels[_pick])
-                st.session_state.pop("_found_leagues", None)
+        with _tab_find:
+            st.caption("Enter your **Sleeper username** (we'll find your leagues) — or paste a **league ID** directly.")
+            _in = st.text_input("Sleeper username or league ID", key="entry_input",
+                                placeholder="your Sleeper username — or paste a league ID")
+            if st.button("Find →", type="primary", key="entry_find"):
+                _q = (_in or "").strip()
                 st.session_state.pop("_entry_err", None)
+                if _q.isdigit() and len(_q) >= 15:        # looks like a league ID
+                    _lg = None
+                    try: _lg = get(f"{BASE}/league/{_q}")
+                    except Exception: _lg = None
+                    if _lg and _lg.get("league_id"):
+                        st.session_state._found_leagues = [{
+                            "league_id": _lg["league_id"], "name": _lg.get("name", "League"),
+                            "season": _lg.get("season"), "total_rosters": _lg.get("total_rosters")}]
+                    else:
+                        st.session_state._found_leagues = []
+                        st.session_state._entry_err = "No league found with that ID."
+                else:                                      # treat as a Sleeper username
+                    _lgs = fetch_user_leagues(_q)
+                    st.session_state._found_leagues = _lgs
+                    if not _lgs:
+                        st.session_state._entry_err = f"No NFL leagues found for '{_q}'. Check the username, or paste a league ID."
                 st.rerun()
+
+            if st.session_state.get("_entry_err"):
+                st.error(st.session_state._entry_err)
+            _found = st.session_state.get("_found_leagues") or []
+            if _found:
+                _labels = {f"{l['name']}  ·  {l.get('season','')}  ·  {l.get('total_rosters','?')} teams": l["league_id"]
+                           for l in _found}
+                _pick = st.selectbox("Pick your league", list(_labels.keys()), key="entry_pick")
+                if st.button("Open league →", type="primary", key="entry_open"):
+                    st.session_state.league_id = _labels[_pick]
+                    save_last_league(_labels[_pick])
+                    st.session_state.pop("_found_leagues", None)
+                    st.session_state.pop("_entry_err", None)
+                    st.rerun()
     st.stop()
 
 league_id = st.session_state.league_id
@@ -1462,30 +1578,40 @@ if st.session_state.get("_onboarded_for") != league_id:
     if _signed_in() and _lp0.get("team"):
         st.session_state._onboarded_for = league_id   # returning member → straight in
     else:
-        st.title(f"🏈 {league.get('name', 'Your league')}")
-        st.caption("Quick setup — you can change either of these anytime from the sidebar.")
         _umap0 = {u["user_id"]: u for u in users}
         _teams0 = sorted({
             ((_umap0.get(r.get("owner_id") or "", {}).get("metadata") or {}).get("team_name")
              or _umap0.get(r.get("owner_id") or "", {}).get("display_name")
              or f"Team {r['roster_id']}") for r in rosters
         })
-        _setup_team = st.selectbox("Which team is yours?", ["—"] + _teams0, key="setup_team")
-        _setup_vs = st.selectbox(
-            "Value source", ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"],
-            key="setup_vs",
-            help="Which ranking source drives every value in the app. You can switch anytime.",
-        )
-        _sc1, _sc2 = st.columns([1, 4])
-        if _sc1.button("Continue →", type="primary", key="setup_go"):
-            save_league_prefs(league_id, value_source=_setup_vs,
-                              team=(_setup_team if _setup_team != "—" else None))
-            st.session_state.pop("_prefs_seeded_for", None)   # sidebar re-seeds from these
-            st.session_state._onboarded_for = league_id
-            st.rerun()
-        if _sc2.button("Switch league", key="setup_switch"):
-            st.session_state.league_id = None
-            st.rerun()
+        # Centre + constrain so it matches the login card and reads intentionally
+        _su_l, _su_c, _su_r = st.columns([1, 1.6, 1])
+        with _su_c:
+            st.title(f"🏈 {league.get('name', 'Your league')}")
+            st.caption("Quick setup — you can change either of these anytime from the sidebar.")
+            # st.form batches the dropdowns: picking a team / value source no longer
+            # triggers a rerun on every change — nothing saves until "Continue".
+            with st.form("setup_form", border=False):
+                _setup_team = st.selectbox("Which team is yours?", ["—"] + _teams0, key="setup_team")
+                _setup_vs = st.selectbox(
+                    "Value source", ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"],
+                    key="setup_vs",
+                )
+                st.caption(
+                    "**Value source** sets which dynasty ranking powers every player's value & rank "
+                    "across the app — FantasyCalc, DynastyNerds, KeepTradeCut, DynastyProcess, or a "
+                    "consensus average of them. You can switch it anytime from the sidebar."
+                )
+                _setup_go = st.form_submit_button("Continue →", type="primary")
+            if _setup_go:
+                save_league_prefs(league_id, value_source=_setup_vs,
+                                  team=(_setup_team if _setup_team != "—" else None))
+                st.session_state.pop("_prefs_seeded_for", None)   # sidebar re-seeds from these
+                st.session_state._onboarded_for = league_id
+                st.rerun()
+            if st.button("Switch league", key="setup_switch"):
+                st.session_state.league_id = None
+                st.rerun()
         st.stop()
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
@@ -1519,25 +1645,28 @@ _sb_team_names = sorted({
 })
 
 with st.sidebar:
-    # ── Brand header (placeholder logo — swap for the real mascot later) ──────
-    st.markdown(
-        """
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:2px;">
-          <div style="width:40px; height:40px; border-radius:11px; flex:0 0 auto;
-               background:linear-gradient(135deg,#ff5a5f,#c0392b);
-               display:flex; align-items:center; justify-content:center;
-               font-size:22px; box-shadow:0 2px 6px rgba(0,0,0,.4);">🤖</div>
-          <div style="line-height:1.1;">
-            <div style="font-size:1.15rem; font-weight:800; color:#fff;">Dynasty FF</div>
-            <div style="font-size:0.92rem; font-weight:600; color:#ff7a7e; letter-spacing:.02em;">Lil' Helper</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    # Brand acts as "home" — jumps back to League Overview (interim until the real
-    # logo image, which we'll make the clickable target).
-    if st.button("🏠 Home", use_container_width=True, key="nav_home"):
+    # Brand logo IS the Home button: a full-width button painted with the logo
+    # SVG as its background, label hidden. Clicking it returns to League Overview.
+    if _LOGO_HORIZONTAL:
+        _logo_uri = "data:image/svg+xml;base64," + base64.b64encode(
+            _LOGO_HORIZONTAL.encode("utf-8")).decode("ascii")
+        st.markdown(f"""
+        <style>
+        [data-testid="stSidebar"] .st-key-nav_home button{{
+          height:60px; padding:0 !important; font-size:0 !important;
+          border:none !important; background-color:transparent !important;
+          background-image:url("{_logo_uri}");
+          background-size:contain; background-repeat:no-repeat; background-position:center;
+        }}
+        [data-testid="stSidebar"] .st-key-nav_home button:hover{{
+          background-color:transparent !important; filter:brightness(1.12);
+        }}
+        /* keep the label in the DOM for screen readers, but invisible */
+        [data-testid="stSidebar"] .st-key-nav_home button p{{ opacity:0; }}
+        </style>
+        """, unsafe_allow_html=True)
+    _home_label = "Dynasty FF Lil' Helper — Home" if _LOGO_HORIZONTAL else "🏠 Home"
+    if st.button(_home_label, width="stretch", key="nav_home"):
         st.session_state.nav_page = "🏠 League Overview"
         st.rerun()
 
@@ -1545,7 +1674,7 @@ with st.sidebar:
     if auth_available():
         if st.session_state.get("auth_email"):
             st.caption(f"✅ Signed in · {st.session_state.auth_email}")
-            if st.button("Sign out", use_container_width=True, key="auth_signout"):
+            if st.button("Sign out", width="stretch", key="auth_signout"):
                 for _k in ("auth_email", "_auth_code_sent", "_auth_pending_email", "_onboarded_for"):
                     st.session_state.pop(_k, None)
                 st.session_state.league_id = None              # back to the entry screen
@@ -1555,7 +1684,7 @@ with st.sidebar:
             with st.expander("🔑 Sign in to save", expanded=False):
                 if not st.session_state.get("_auth_code_sent"):
                     _ae = st.text_input("Email", key="auth_email_input", placeholder="you@email.com")
-                    if st.button("Send code", use_container_width=True, key="auth_send"):
+                    if st.button("Send code", width="stretch", key="auth_send"):
                         ok, err = auth_send_code(_ae)
                         if ok:
                             st.session_state._auth_code_sent = True
@@ -1567,7 +1696,7 @@ with st.sidebar:
                     st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
                     _code = st.text_input("6-digit code", key="auth_code_input")
                     _c1, _c2 = st.columns(2)
-                    if _c1.button("Verify", use_container_width=True, key="auth_verify"):
+                    if _c1.button("Verify", width="stretch", key="auth_verify"):
                         _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
                         if _em:
                             st.session_state.auth_email = _em
@@ -1576,7 +1705,7 @@ with st.sidebar:
                             st.rerun()
                         else:
                             st.error("Invalid or expired code — try again.")
-                    if _c2.button("Cancel", use_container_width=True, key="auth_cancel"):
+                    if _c2.button("Cancel", width="stretch", key="auth_cancel"):
                         st.session_state.pop("_auth_code_sent", None)
                         st.rerun()
 
@@ -1628,15 +1757,7 @@ active_values = {
 # Dark-only by design: several hand-built elements (Power Rankings table, chart
 # colours) are styled for dark. "System Default" shipped a broken light view to
 # light-mode users, so it was removed. Light can return once those are tokenised.
-_theme = "Dark"
-st.markdown("""
-<style>
-    .stApp, .block-container { background-color: #0e1117 !important; color: #fafafa !important; }
-    [data-testid="stMetric"] { background: #1c1f26 !important; border: 1px solid #2d3140 !important; color: #fafafa !important; }
-    [data-testid="stMetricValue"], [data-testid="stMetricLabel"] { color: #fafafa !important; }
-    .stDataFrame { background: #1c1f26 !important; }
-</style>
-""", unsafe_allow_html=True)
+_theme = "Dark"   # drives Plotly chart templates; surfaces/colours now via config.toml + top CSS
 
 # Trade/DEF analysis — cached in session_state; only recomputes when value_source changes or Refresh is clicked
 _trade_cache_key = f"trade_data_{league_id}_{value_source}"
@@ -1698,364 +1819,367 @@ if st.session_state.get("_toast_msg"):
 
 # ── Page: League Overview ─────────────────────────────────────────────────────
 if page == "🏠 League Overview":
-    st.title(league.get("name", "Dynasty League"))
+    @st.fragment
+    def _frag_league_overview():
+        st.title(league.get("name", "Dynasty League"))
 
-    # Top metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Teams",          len(rosters))
-    col2.metric("Players Valued", f"{len(fc_values):,}")
-    col3.metric("Rookies Ranked", len(fc_rookies))
-    col4.metric("Pick Values",    len(fc_picks))
-    col5.metric("Stats Season",   STATS_SEASON)
-    st.caption(
-        f"Value sources loaded — FantasyCalc {len(fc_values):,} · DynastyNerds {len(dn_map):,} · "
-        f"KeepTradeCut {len(ktc_map):,} · DynastyProcess {len(dp_map):,}"
-    )
+        # Top metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Teams",          len(rosters))
+        col2.metric("Players Valued", f"{len(fc_values):,}")
+        col3.metric("Rookies Ranked", len(fc_rookies))
+        col4.metric("Pick Values",    len(fc_picks))
+        col5.metric("Stats Season",   STATS_SEASON)
+        st.caption(
+            f"Value sources loaded — FantasyCalc {len(fc_values):,} · DynastyNerds {len(dn_map):,} · "
+            f"KeepTradeCut {len(ktc_map):,} · DynastyProcess {len(dp_map):,}"
+        )
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # ── League Power Rankings table ───────────────────────────────────────────
-    st.subheader("League Power Rankings")
+        # ── League Power Rankings table ───────────────────────────────────────────
+        st.subheader("League Power Rankings")
 
-    _cb1, _cb2, _ = st.columns([1, 1, 4])
-    _excl_def   = _cb1.checkbox("Exclude DEF",   key="pr_excl_def")
-    _excl_picks = _cb2.checkbox("Exclude Picks", key="pr_excl_picks")
+        _cb1, _cb2, _ = st.columns([1, 1, 4])
+        _excl_def   = _cb1.checkbox("Exclude DEF",   key="pr_excl_def")
+        _excl_picks = _cb2.checkbox("Exclude Picks", key="pr_excl_picks")
 
-    _active_dims = ["QB", "RB", "WR", "TE"]
-    if not _excl_picks: _active_dims.append("PICK")
-    if not _excl_def:   _active_dims.append("DEF")
-    _dim_count = len(_active_dims)
-    st.caption(f"Score = average normalised rank across {_dim_count} dimension{'s' if _dim_count != 1 else ''}: {', '.join(_active_dims).replace('PICK','Picks')}")
+        _active_dims = ["QB", "RB", "WR", "TE"]
+        if not _excl_picks: _active_dims.append("PICK")
+        if not _excl_def:   _active_dims.append("DEF")
+        _dim_count = len(_active_dims)
+        st.caption(f"Score = average normalised rank across {_dim_count} dimension{'s' if _dim_count != 1 else ''}: {', '.join(_active_dims).replace('PICK','Picks')}")
 
-    _n = len(team_data)
+        _n = len(team_data)
 
-    # DEF ranks — sort teams by avg def pts descending
-    _def_vals  = {rid: (def_analysis.get(rid) or {}).get("avg_pts") for rid in team_data}
-    _def_order = sorted([x for x in _def_vals.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
-    _def_rank_map = {rid: i + 1 for i, (rid, _) in enumerate(_def_order)}
+        # DEF ranks — sort teams by avg def pts descending
+        _def_vals  = {rid: (def_analysis.get(rid) or {}).get("avg_pts") for rid in team_data}
+        _def_order = sorted([x for x in _def_vals.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
+        _def_rank_map = {rid: i + 1 for i, (rid, _) in enumerate(_def_order)}
 
-    # Build one row per team
-    _pr_rows = []
-    for rid, _td in team_data.items():
-        _lr = {**_td.get("pos_league_rank", {}), "DEF": _def_rank_map.get(rid)}
-        _norm = []
-        for _d in _active_dims:
-            r = _lr.get(_d)
-            if r is not None:
-                _norm.append((1 - (r - 1) / max(_n - 1, 1)) * 100)
-        _overall = round(sum(_norm) / len(_norm)) if _norm else 0
-        _pr_rows.append({
-            "team": _td["name"], "QB": _lr.get("QB"), "RB": _lr.get("RB"),
-            "WR": _lr.get("WR"), "TE": _lr.get("TE"),
-            "Picks": _lr.get("PICK"), "DEF": _lr.get("DEF"), "score": _overall,
-        })
-    _pr_rows.sort(key=lambda x: x["score"], reverse=True)
+        # Build one row per team
+        _pr_rows = []
+        for rid, _td in team_data.items():
+            _lr = {**_td.get("pos_league_rank", {}), "DEF": _def_rank_map.get(rid)}
+            _norm = []
+            for _d in _active_dims:
+                r = _lr.get(_d)
+                if r is not None:
+                    _norm.append((1 - (r - 1) / max(_n - 1, 1)) * 100)
+            _overall = round(sum(_norm) / len(_norm)) if _norm else 0
+            _pr_rows.append({
+                "team": _td["name"], "QB": _lr.get("QB"), "RB": _lr.get("RB"),
+                "WR": _lr.get("WR"), "TE": _lr.get("TE"),
+                "Picks": _lr.get("PICK"), "DEF": _lr.get("DEF"), "score": _overall,
+            })
+        _pr_rows.sort(key=lambda x: x["score"], reverse=True)
 
-    def _badge(rank, n, excluded=False):
-        if rank is None:
-            return '<td style="text-align:center;color:#555">—</td>'
-        if excluded:
+        def _badge(rank, n, excluded=False):
+            if rank is None:
+                return '<td style="text-align:center;color:#555">—</td>'
+            if excluded:
+                return (f'<td style="text-align:center;padding:6px 4px">'
+                        f'<span style="background:#1a1d24;color:#444;padding:3px 10px;'
+                        f'border-radius:12px;font-size:0.82rem;font-weight:600;text-decoration:line-through">#{rank}</span></td>')
+            pct = 1 - (rank - 1) / max(n - 1, 1)
+            if   pct >= 0.75: bg, fg = "#0d3320", "#4ade80"
+            elif pct >= 0.5:  bg, fg = "#2d2500", "#fbbf24"
+            elif pct >= 0.25: bg, fg = "#2d1400", "#fb923c"
+            else:             bg, fg = "#2d0a0a", "#f87171"
             return (f'<td style="text-align:center;padding:6px 4px">'
-                    f'<span style="background:#1a1d24;color:#444;padding:3px 10px;'
-                    f'border-radius:12px;font-size:0.82rem;font-weight:600;text-decoration:line-through">#{rank}</span></td>')
-        pct = 1 - (rank - 1) / max(n - 1, 1)
-        if   pct >= 0.75: bg, fg = "#0d3320", "#4ade80"
-        elif pct >= 0.5:  bg, fg = "#2d2500", "#fbbf24"
-        elif pct >= 0.25: bg, fg = "#2d1400", "#fb923c"
-        else:             bg, fg = "#2d0a0a", "#f87171"
-        return (f'<td style="text-align:center;padding:6px 4px">'
-                f'<span style="background:{bg};color:{fg};padding:3px 10px;'
-                f'border-radius:12px;font-size:0.82rem;font-weight:600">#{rank}</span></td>')
+                    f'<span style="background:{bg};color:{fg};padding:3px 10px;'
+                    f'border-radius:12px;font-size:0.82rem;font-weight:600">#{rank}</span></td>')
 
-    # Header — greyed label for excluded columns
-    def _th(label, excluded=False):
-        _style = "text-align:center;padding:10px 8px;font-weight:500;"
-        _style += "color:#444;text-decoration:line-through" if excluded else "color:#888"
-        return f'<th style="{_style}">{label}</th>'
+        # Header — greyed label for excluded columns
+        def _th(label, excluded=False):
+            _style = "text-align:center;padding:10px 8px;font-weight:500;"
+            _style += "color:#444;text-decoration:line-through" if excluded else "color:#888"
+            return f'<th style="{_style}">{label}</th>'
 
-    _tbl_html = (
-        '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin-top:6px">'
-        '<thead><tr style="border-bottom:2px solid #2d3140">'
-        '<th style="text-align:left;padding:10px 14px;color:#888;font-weight:500;width:28%">#&nbsp; Team</th>'
-        + _th("QB") + _th("RB") + _th("WR") + _th("TE")
-        + _th("Picks", _excl_picks) + _th("DEF", _excl_def)
-        + '<th style="text-align:left;padding:10px 14px;color:#888;font-weight:500;min-width:110px">Score</th>'
-        '</tr></thead><tbody>'
-    )
-
-    for i, row in enumerate(_pr_rows):
-        _is_mine = my_team and row["team"] == my_team
-        _bg  = "rgba(255,196,0,0.12)" if _is_mine else ("#16191f" if i % 2 == 0 else "#11141a")
-        _sc  = row["score"]
-        _bc  = "#4ade80" if _sc >= 60 else ("#fbbf24" if _sc >= 40 else "#f87171")
-        _row_border = "border-left:3px solid #ffc400;" if _is_mine else ""
-        _star = "⭐ " if _is_mine else ""
-        _tbl_html += f'<tr style="background:{_bg};{_row_border}border-bottom:1px solid #1e2130">'
-        _tbl_html += (f'<td style="padding:10px 14px;font-weight:500;color:#e0e0e0">'
-                      f'<span style="color:#555;margin-right:8px">{i+1}</span>{_star}{row["team"]}</td>')
-        # Always show all 6 position badges — greyed out if excluded from score
-        for _dim, _excl in [("QB",False),("RB",False),("WR",False),("TE",False),
-                             ("Picks",_excl_picks),("DEF",_excl_def)]:
-            _tbl_html += _badge(row[_dim], _n, excluded=_excl)
-        _tbl_html += (f'<td style="padding:10px 14px">'
-                      f'<div style="display:flex;align-items:center;gap:8px">'
-                      f'<div style="background:#1e2130;border-radius:4px;height:7px;flex:1;min-width:60px">'
-                      f'<div style="background:{_bc};width:{_sc}%;height:7px;border-radius:4px"></div></div>'
-                      f'<span style="font-size:0.82rem;color:#ccc;min-width:26px;text-align:right">{_sc}</span>'
-                      f'</div></td></tr>')
-
-    _tbl_html += "</tbody></table>"
-    st.markdown(_tbl_html, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── Chart A: Radar / Positional Strength ──────────────────────────────────
-    with st.container():
-        st.subheader("Positional Strength")
-        st.caption("Radar chart — each dimension normalised 0–100 across teams (0 = weakest, 100 = strongest)")
-
-        # Build per-team values for each radar axis
-        radar_dims = ["QB", "RB", "WR", "TE", "PICK", "DEF"]
-
-        # Skill positions from team_data pos_avgs
-        raw_radar = {dim: {} for dim in radar_dims}
-        for rid, td in team_data.items():
-            for dim in ["QB", "RB", "WR", "TE", "PICK"]:
-                raw_radar[dim][rid] = td["pos_avgs"].get(dim)
-        # DEF from def_analysis
-        for rid in team_data:
-            de = def_analysis.get(rid, {})
-            raw_radar["DEF"][rid] = de.get("avg_pts")
-
-        # Normalise each dimension
-        norm_radar = {dim: normalize_dim(raw_radar[dim]) for dim in radar_dims}
-
-        # Team name lookup
-        rid_to_name = {rid: td["name"] for rid, td in team_data.items()}
-        all_team_names_sorted = sorted(rid_to_name.values())
-
-        default_sel = st.session_state.get("_sticky_radar_sel")
-        if default_sel is None:   # no choice this session → default to My Team
-            if my_team in all_team_names_sorted:
-                default_sel = [my_team]
-            else:
-                default_sel = [all_team_names_sorted[0]] if all_team_names_sorted else []
-        default_sel = [t for t in default_sel if t in all_team_names_sorted]
-        selected_teams = st.multiselect(
-            "Highlight teams (1–3)",
-            options=all_team_names_sorted,
-            default=default_sel,
-            max_selections=3,
-            key="radar_sel",
+        _tbl_html = (
+            '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;margin-top:6px">'
+            '<thead><tr style="border-bottom:2px solid #2d3140">'
+            '<th style="text-align:left;padding:10px 14px;color:#888;font-weight:500;width:28%">#&nbsp; Team</th>'
+            + _th("QB") + _th("RB") + _th("WR") + _th("TE")
+            + _th("Picks", _excl_picks) + _th("DEF", _excl_def)
+            + '<th style="text-align:left;padding:10px 14px;color:#888;font-weight:500;min-width:110px">Score</th>'
+            '</tr></thead><tbody>'
         )
-        st.session_state._sticky_radar_sel = selected_teams
 
-        HIGHLIGHT_COLORS = ["#2196F3", "#F44336", "#4CAF50"]
-        _chart_template = "plotly_dark" if _theme == "Dark" else "plotly_white"
-        _bg_trace_color = "rgba(180,180,180,0.10)"   # faint so selected teams pop
-        name_to_rid = {td["name"]: rid for rid, td in team_data.items()}
-        _sel_rids = {name_to_rid.get(t) for t in selected_teams}
+        for i, row in enumerate(_pr_rows):
+            _is_mine = my_team and row["team"] == my_team
+            _bg  = "rgba(255,196,0,0.12)" if _is_mine else ("#16191f" if i % 2 == 0 else "#11141a")
+            _sc  = row["score"]
+            _bc  = "#4ade80" if _sc >= 60 else ("#fbbf24" if _sc >= 40 else "#f87171")
+            _row_border = "border-left:3px solid #ffc400;" if _is_mine else ""
+            _star = "⭐ " if _is_mine else ""
+            _tbl_html += f'<tr style="background:{_bg};{_row_border}border-bottom:1px solid #1e2130">'
+            _tbl_html += (f'<td style="padding:10px 14px;font-weight:500;color:#e0e0e0">'
+                          f'<span style="color:#555;margin-right:8px">{i+1}</span>{_star}{row["team"]}</td>')
+            # Always show all 6 position badges — greyed out if excluded from score
+            for _dim, _excl in [("QB",False),("RB",False),("WR",False),("TE",False),
+                                 ("Picks",_excl_picks),("DEF",_excl_def)]:
+                _tbl_html += _badge(row[_dim], _n, excluded=_excl)
+            _tbl_html += (f'<td style="padding:10px 14px">'
+                          f'<div style="display:flex;align-items:center;gap:8px">'
+                          f'<div style="background:#1e2130;border-radius:4px;height:7px;flex:1;min-width:60px">'
+                          f'<div style="background:{_bc};width:{_sc}%;height:7px;border-radius:4px"></div></div>'
+                          f'<span style="font-size:0.82rem;color:#ccc;min-width:26px;text-align:right">{_sc}</span>'
+                          f'</div></td></tr>')
 
-        fig_radar = go.Figure()
+        _tbl_html += "</tbody></table>"
+        st.markdown(_tbl_html, unsafe_allow_html=True)
 
-        # Faded background traces for NON-selected teams only (context, not clutter)
-        for rid, td in team_data.items():
-            if rid in _sel_rids:
-                continue
-            r_vals = [norm_radar[dim][rid] for dim in radar_dims]
-            r_vals += [r_vals[0]]  # close polygon
-            dims_closed = radar_dims + [radar_dims[0]]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=r_vals,
-                theta=dims_closed,
-                line=dict(color=_bg_trace_color, width=1),
-                opacity=0.5,
-                showlegend=False,
-                hoverinfo="skip",
-            ))
+        st.markdown("---")
 
-        # Coloured traces for selected teams
-        for i, team_name in enumerate(selected_teams):
-            sel_rid = name_to_rid.get(team_name)
-            if sel_rid is None:
-                continue
-            r_vals = [norm_radar[dim][sel_rid] for dim in radar_dims]
-            r_vals += [r_vals[0]]
-            dims_closed = radar_dims + [radar_dims[0]]
-            fig_radar.add_trace(go.Scatterpolar(
-                r=r_vals,
-                theta=dims_closed,
-                line=dict(color=HIGHLIGHT_COLORS[i], width=2.5),
-                name=team_name,
-            ))
+        # ── Chart A: Radar / Positional Strength ──────────────────────────────────
+        with st.container():
+            st.subheader("Positional Strength")
+            st.caption("Radar chart — each dimension normalised 0–100 across teams (0 = weakest, 100 = strongest)")
 
-        fig_radar.update_layout(
-            polar=dict(
-                radialaxis=dict(visible=True, range=[0, 100]),
-                bgcolor="rgba(0,0,0,0)",
-            ),
-            showlegend=True,
-            height=500,
-            margin=dict(t=60, b=40, l=60, r=60),   # padding so axis labels (QB) don't clip
-            template=_chart_template,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
+            # Build per-team values for each radar axis
+            radar_dims = ["QB", "RB", "WR", "TE", "PICK", "DEF"]
 
-    # ── Chart B: Roster Value Stacked Bar ────────────────────────────────────
-    with st.container():
-        st.subheader("Roster Value by Position")
-        st.caption("Total FC value per team, stacked by position (skill positions only). Sorted descending.")
+            # Skill positions from team_data pos_avgs
+            raw_radar = {dim: {} for dim in radar_dims}
+            for rid, td in team_data.items():
+                for dim in ["QB", "RB", "WR", "TE", "PICK"]:
+                    raw_radar[dim][rid] = td["pos_avgs"].get(dim)
+            # DEF from def_analysis
+            for rid in team_data:
+                de = def_analysis.get(rid, {})
+                raw_radar["DEF"][rid] = de.get("avg_pts")
 
-        POS_COLORS = {"QB": "#3B82F6", "RB": "#10B981", "WR": "#F59E0B", "TE": "#EF4444"}
+            # Normalise each dimension
+            norm_radar = {dim: normalize_dim(raw_radar[dim]) for dim in radar_dims}
 
-        # Compute total value per team and sort descending
-        total_vals = {}
-        for rid, td in team_data.items():
-            total = sum(
-                p["value"]
-                for pos in ["QB", "RB", "WR", "TE"]
-                for p in td["pos_players"].get(pos, [])
+            # Team name lookup
+            rid_to_name = {rid: td["name"] for rid, td in team_data.items()}
+            all_team_names_sorted = sorted(rid_to_name.values())
+
+            default_sel = st.session_state.get("_sticky_radar_sel")
+            if default_sel is None:   # no choice this session → default to My Team
+                if my_team in all_team_names_sorted:
+                    default_sel = [my_team]
+                else:
+                    default_sel = [all_team_names_sorted[0]] if all_team_names_sorted else []
+            default_sel = [t for t in default_sel if t in all_team_names_sorted]
+            selected_teams = st.multiselect(
+                "Highlight teams (1–3)",
+                options=all_team_names_sorted,
+                default=default_sel,
+                max_selections=3,
+                key="radar_sel",
             )
-            total_vals[rid] = total
+            st.session_state._sticky_radar_sel = selected_teams
 
-        sorted_rids = sorted(total_vals.keys(), key=lambda r: total_vals[r])
-        team_names_bar = [rid_to_name[rid] for rid in sorted_rids]
+            HIGHLIGHT_COLORS = ["#2196F3", "#F44336", "#4CAF50"]
+            _chart_template = "plotly_dark" if _theme == "Dark" else "plotly_white"
+            _bg_trace_color = "rgba(180,180,180,0.10)"   # faint so selected teams pop
+            name_to_rid = {td["name"]: rid for rid, td in team_data.items()}
+            _sel_rids = {name_to_rid.get(t) for t in selected_teams}
 
-        fig_bar = go.Figure()
-        for pos, color in POS_COLORS.items():
-            values = [
-                sum(p["value"] for p in team_data[rid]["pos_players"].get(pos, []))
-                for rid in sorted_rids
-            ]
-            _seg_ranks = []
-            for rid in sorted_rids:
-                _rk = team_data[rid].get("pos_league_rank", {}).get(pos)
-                _seg_ranks.append(f"#{_rk}" if _rk else "")
-            fig_bar.add_trace(go.Bar(
-                name=pos,
-                y=team_names_bar,
-                x=values,
-                orientation="h",
-                marker_color=color,
-                text=_seg_ranks,
-                textposition="inside",
-                insidetextanchor="middle",
-                textfont=dict(size=11, color="white"),
-            ))
+            fig_radar = go.Figure()
 
-        fig_bar.update_layout(
-            barmode="stack",
-            height=420,
-            xaxis_title="Total FC Value",
-            yaxis_title="",
-            margin=dict(t=20, b=40, l=160),
-            template=_chart_template,
-            uniformtext_minsize=9,
-            uniformtext_mode="show",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        st.caption("#N inside each segment = that team's league rank at the position (by avg value).")
-        st.plotly_chart(fig_bar, use_container_width=True)
+            # Faded background traces for NON-selected teams only (context, not clutter)
+            for rid, td in team_data.items():
+                if rid in _sel_rids:
+                    continue
+                r_vals = [norm_radar[dim][rid] for dim in radar_dims]
+                r_vals += [r_vals[0]]  # close polygon
+                dims_closed = radar_dims + [radar_dims[0]]
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=r_vals,
+                    theta=dims_closed,
+                    line=dict(color=_bg_trace_color, width=1),
+                    opacity=0.5,
+                    showlegend=False,
+                    hoverinfo="skip",
+                ))
 
-    # ── Chart C: Rebuild vs Contend Scatter ───────────────────────────────────
-    with st.container():
-        st.subheader("Rebuild vs. Contend")
-        st.caption("X = average roster age · Y = total FC value. Quadrant lines at league medians.")
+            # Coloured traces for selected teams
+            for i, team_name in enumerate(selected_teams):
+                sel_rid = name_to_rid.get(team_name)
+                if sel_rid is None:
+                    continue
+                r_vals = [norm_radar[dim][sel_rid] for dim in radar_dims]
+                r_vals += [r_vals[0]]
+                dims_closed = radar_dims + [radar_dims[0]]
+                fig_radar.add_trace(go.Scatterpolar(
+                    r=r_vals,
+                    theta=dims_closed,
+                    line=dict(color=HIGHLIGHT_COLORS[i], width=2.5),
+                    name=team_name,
+                ))
 
-        scatter_rows = []
-        for rid, td in team_data.items():
-            # Collect ages of all rostered players
-            ages = []
-            for pos in ["QB", "RB", "WR", "TE"]:
-                for player_entry in td["pos_players"].get(pos, []):
-                    pid = player_entry.get("pid")
-                    if pid:
-                        age = players.get(pid, {}).get("age")
-                        if age:
-                            ages.append(age)
-            avg_age = sum(ages) / len(ages) if ages else None
-            total_val = sum(
-                p["value"]
-                for pos in ["QB", "RB", "WR", "TE"]
-                for p in td["pos_players"].get(pos, [])
-            )
-            if avg_age is not None:
-                scatter_rows.append({
-                    "Team": td["name"],
-                    "Avg Age": round(avg_age, 1),
-                    "Total Value": total_val,
-                })
-
-        if scatter_rows:
-            df_scatter = pd.DataFrame(scatter_rows)
-            median_age   = df_scatter["Avg Age"].median()
-            median_value = df_scatter["Total Value"].median()
-            min_age      = df_scatter["Avg Age"].min()
-            max_age      = df_scatter["Avg Age"].max()
-            min_val      = df_scatter["Total Value"].min()
-            max_val      = df_scatter["Total Value"].max()
-
-            fig_scatter = px.scatter(
-                df_scatter,
-                x="Avg Age",
-                y="Total Value",
-                text="Team",
-                height=450,
-            )
-            # Highlight My Team in gold, everyone else blue
-            _mk_colors = ["#ffc400" if t == my_team else "#2196F3" for t in df_scatter["Team"]]
-            _mk_sizes  = [17 if t == my_team else 12 for t in df_scatter["Team"]]
-            fig_scatter.update_traces(
-                textposition="top center",
-                textfont=dict(size=10),
-                marker=dict(size=_mk_sizes, color=_mk_colors,
-                            line=dict(width=1, color="rgba(0,0,0,0.3)")),
-                cliponaxis=False,
-            )
-
-            # Quadrant lines
-            _qline_color = "rgba(200,200,200,0.6)" if _theme == "Dark" else "rgba(100,100,100,0.4)"
-            fig_scatter.add_hline(y=median_value, line_dash="dot", line_color=_qline_color)
-            fig_scatter.add_vline(x=median_age,   line_dash="dot", line_color=_qline_color)
-
-            # Quadrant labels
-            pad_x = (max_age - min_age) * 0.05
-            pad_y = (max_val - min_val) * 0.05
-            quadrant_labels = [
-                (min_age + pad_x, max_val - pad_y, "Win Now"),
-                (max_age - pad_x, max_val - pad_y, "Fading"),
-                (min_age + pad_x, min_val + pad_y, "Rebuilding"),
-                (max_age - pad_x, min_val + pad_y, "Stuck"),
-            ]
-            for qx, qy, qtxt in quadrant_labels:
-                fig_scatter.add_annotation(
-                    x=qx, y=qy, text=qtxt,
-                    showarrow=False,
-                    font=dict(size=11, color="grey"),
-                    opacity=0.7,
-                )
-
-            # Expand axis ranges so corner quadrant labels and team names don't clip
-            _xr = (max_age - min_age) or 1
-            _yr = (max_val - min_val) or 1
-            fig_scatter.update_layout(
-                margin=dict(t=20, b=40, l=10, r=10),
+            fig_radar.update_layout(
+                polar=dict(
+                    radialaxis=dict(visible=True, range=[0, 100]),
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                showlegend=True,
+                height=500,
+                margin=dict(t=60, b=40, l=60, r=60),   # padding so axis labels (QB) don't clip
                 template=_chart_template,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(range=[min_age - _xr * 0.15, max_age + _xr * 0.15]),
-                yaxis=dict(range=[min_val - _yr * 0.18, max_val + _yr * 0.18]),
             )
-            st.plotly_chart(fig_scatter, use_container_width=True)
-            if my_team:
-                st.caption(f"⭐ Gold dot = {my_team}")
-        else:
-            st.info("Not enough roster age data to generate scatter chart.")
+            st.plotly_chart(fig_radar, width="stretch")
 
-# ── Page: Rosters ─────────────────────────────────────────────────────────────
+        # ── Chart B: Roster Value Stacked Bar ────────────────────────────────────
+        with st.container():
+            st.subheader("Roster Value by Position")
+            st.caption("Total FC value per team, stacked by position (skill positions only). Sorted descending.")
+
+            POS_COLORS = {"QB": "#3B82F6", "RB": "#10B981", "WR": "#F59E0B", "TE": "#EF4444"}
+
+            # Compute total value per team and sort descending
+            total_vals = {}
+            for rid, td in team_data.items():
+                total = sum(
+                    p["value"]
+                    for pos in ["QB", "RB", "WR", "TE"]
+                    for p in td["pos_players"].get(pos, [])
+                )
+                total_vals[rid] = total
+
+            sorted_rids = sorted(total_vals.keys(), key=lambda r: total_vals[r])
+            team_names_bar = [rid_to_name[rid] for rid in sorted_rids]
+
+            fig_bar = go.Figure()
+            for pos, color in POS_COLORS.items():
+                values = [
+                    sum(p["value"] for p in team_data[rid]["pos_players"].get(pos, []))
+                    for rid in sorted_rids
+                ]
+                _seg_ranks = []
+                for rid in sorted_rids:
+                    _rk = team_data[rid].get("pos_league_rank", {}).get(pos)
+                    _seg_ranks.append(f"#{_rk}" if _rk else "")
+                fig_bar.add_trace(go.Bar(
+                    name=pos,
+                    y=team_names_bar,
+                    x=values,
+                    orientation="h",
+                    marker_color=color,
+                    text=_seg_ranks,
+                    textposition="inside",
+                    insidetextanchor="middle",
+                    textfont=dict(size=11, color="white"),
+                ))
+
+            fig_bar.update_layout(
+                barmode="stack",
+                height=420,
+                xaxis_title="Total FC Value",
+                yaxis_title="",
+                margin=dict(t=20, b=40, l=160),
+                template=_chart_template,
+                uniformtext_minsize=9,
+                uniformtext_mode="show",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+            )
+            st.caption("#N inside each segment = that team's league rank at the position (by avg value).")
+            st.plotly_chart(fig_bar, width="stretch")
+
+        # ── Chart C: Rebuild vs Contend Scatter ───────────────────────────────────
+        with st.container():
+            st.subheader("Rebuild vs. Contend")
+            st.caption("X = average roster age · Y = total FC value. Quadrant lines at league medians.")
+
+            scatter_rows = []
+            for rid, td in team_data.items():
+                # Collect ages of all rostered players
+                ages = []
+                for pos in ["QB", "RB", "WR", "TE"]:
+                    for player_entry in td["pos_players"].get(pos, []):
+                        pid = player_entry.get("pid")
+                        if pid:
+                            age = players.get(pid, {}).get("age")
+                            if age:
+                                ages.append(age)
+                avg_age = sum(ages) / len(ages) if ages else None
+                total_val = sum(
+                    p["value"]
+                    for pos in ["QB", "RB", "WR", "TE"]
+                    for p in td["pos_players"].get(pos, [])
+                )
+                if avg_age is not None:
+                    scatter_rows.append({
+                        "Team": td["name"],
+                        "Avg Age": round(avg_age, 1),
+                        "Total Value": total_val,
+                    })
+
+            if scatter_rows:
+                df_scatter = pd.DataFrame(scatter_rows)
+                median_age   = df_scatter["Avg Age"].median()
+                median_value = df_scatter["Total Value"].median()
+                min_age      = df_scatter["Avg Age"].min()
+                max_age      = df_scatter["Avg Age"].max()
+                min_val      = df_scatter["Total Value"].min()
+                max_val      = df_scatter["Total Value"].max()
+
+                fig_scatter = px.scatter(
+                    df_scatter,
+                    x="Avg Age",
+                    y="Total Value",
+                    text="Team",
+                    height=450,
+                )
+                # Highlight My Team in gold, everyone else blue
+                _mk_colors = ["#ffc400" if t == my_team else "#2196F3" for t in df_scatter["Team"]]
+                _mk_sizes  = [17 if t == my_team else 12 for t in df_scatter["Team"]]
+                fig_scatter.update_traces(
+                    textposition="top center",
+                    textfont=dict(size=10),
+                    marker=dict(size=_mk_sizes, color=_mk_colors,
+                                line=dict(width=1, color="rgba(0,0,0,0.3)")),
+                    cliponaxis=False,
+                )
+
+                # Quadrant lines
+                _qline_color = "rgba(200,200,200,0.6)" if _theme == "Dark" else "rgba(100,100,100,0.4)"
+                fig_scatter.add_hline(y=median_value, line_dash="dot", line_color=_qline_color)
+                fig_scatter.add_vline(x=median_age,   line_dash="dot", line_color=_qline_color)
+
+                # Quadrant labels
+                pad_x = (max_age - min_age) * 0.05
+                pad_y = (max_val - min_val) * 0.05
+                quadrant_labels = [
+                    (min_age + pad_x, max_val - pad_y, "Win Now"),
+                    (max_age - pad_x, max_val - pad_y, "Fading"),
+                    (min_age + pad_x, min_val + pad_y, "Rebuilding"),
+                    (max_age - pad_x, min_val + pad_y, "Stuck"),
+                ]
+                for qx, qy, qtxt in quadrant_labels:
+                    fig_scatter.add_annotation(
+                        x=qx, y=qy, text=qtxt,
+                        showarrow=False,
+                        font=dict(size=11, color="grey"),
+                        opacity=0.7,
+                    )
+
+                # Expand axis ranges so corner quadrant labels and team names don't clip
+                _xr = (max_age - min_age) or 1
+                _yr = (max_val - min_val) or 1
+                fig_scatter.update_layout(
+                    margin=dict(t=20, b=40, l=10, r=10),
+                    template=_chart_template,
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    xaxis=dict(range=[min_age - _xr * 0.15, max_age + _xr * 0.15]),
+                    yaxis=dict(range=[min_val - _yr * 0.18, max_val + _yr * 0.18]),
+                )
+                st.plotly_chart(fig_scatter, width="stretch")
+                if my_team:
+                    st.caption(f"⭐ Gold dot = {my_team}")
+            else:
+                st.info("Not enough roster age data to generate scatter chart.")
+
+    # ── Page: Rosters ─────────────────────────────────────────────────────────────
+    _frag_league_overview()
 elif page == "📋 Rosters & Draft Picks":
     df_r = build_rosters_df(rosters, users, players, player_pts, pos_ranks, fc_values,
                             val_maps=val_maps, value_source=value_source)
@@ -2199,12 +2323,12 @@ elif page == "📋 Rosters & Draft Picks":
             lambda row: [_hl if row["Team"] == my_team else "" for _ in row], axis=1
         )
         st.dataframe(
-            _styled, use_container_width=True, hide_index=True,
+            _styled, width="stretch", hide_index=True,
             column_config={"Value": COL_CFG["Value"]},
         )
     else:
         st.dataframe(
-            dv, use_container_width=True, hide_index=True,
+            dv, width="stretch", hide_index=True,
             column_config={"Value": COL_CFG["Value"]},
         )
     _hl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv["Team"] == my_team).any() else ""
@@ -2315,7 +2439,7 @@ elif page == "🔍 Free Agents":
                 "vs League":       f"{_gap_pct:+d}%",
                 "League Rank":     f"{_rank} / {_n_teams}" if _rank else "—",
             })
-        st.dataframe(pd.DataFrame(_need_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(_need_rows), width="stretch", hide_index=True)
 
         st.divider()
 
@@ -2451,7 +2575,7 @@ elif page == "🔍 Free Agents":
         else:
             st.dataframe(
                 _drop_df[_drop_cols],
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 column_config={
                     val_col:               COL_CFG["Value"],
                     f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"],
@@ -2507,12 +2631,12 @@ elif page == "⚙️ Settings":
         unsafe_allow_html=True,
     )
     _dc2.markdown('<div style="padding-top:0.5rem;"></div>', unsafe_allow_html=True)
-    if _dc2.button("🔄 Refresh data", use_container_width=True,
+    if _dc2.button("🔄 Refresh data", width="stretch",
                    help="Re-fetch all values, stats and news from the sources"):
         _refresh_all_data()
         st.rerun()
     _dc3.markdown('<div style="padding-top:0.5rem;"></div>', unsafe_allow_html=True)
-    if _dc3.button("🔁 Switch league", use_container_width=True):
+    if _dc3.button("🔁 Switch league", width="stretch"):
         st.session_state.league_id = None
         st.rerun()
     st.divider()
@@ -2565,7 +2689,7 @@ elif page == "⚙️ Settings":
     if sel_cats:  _sc_mask &= df_sc["Category"].isin(sel_cats)
     if stat_srch: _sc_mask &= df_sc["Stat"].str.contains(stat_srch, case=False, na=False)
     _sc_dv = df_sc[_sc_mask]
-    st.dataframe(_sc_dv, use_container_width=True, hide_index=True,
+    st.dataframe(_sc_dv, width="stretch", hide_index=True,
                  column_config={"Points": COL_CFG["Points"]})
     st.caption(plural(len(_sc_dv), "active scoring rule"))
 
@@ -2606,718 +2730,721 @@ elif page == "📈 Trending":
         _tr_styled = dv.style.apply(
             lambda row: [_tr_hl if row["Dynasty Team"] == my_team else "" for _ in row], axis=1
         )
-        st.dataframe(_tr_styled, use_container_width=True, hide_index=True, column_config=_tr_col_cfg)
+        st.dataframe(_tr_styled, width="stretch", hide_index=True, column_config=_tr_col_cfg)
         _tr_note = f" · ⭐ highlighted = {my_team}"
     else:
-        st.dataframe(dv, use_container_width=True, hide_index=True, column_config=_tr_col_cfg)
+        st.dataframe(dv, width="stretch", hide_index=True, column_config=_tr_col_cfg)
         _tr_note = ""
     st.caption(f"Top adds + drops across all Sleeper leagues (last {TREND_LOOKBACK}h) · {len(dv)} shown · Value source: **{value_source}**{_tr_note}")
 
 # ── Page: Trade Analyzer ─────────────────────────────────────────────────────
 elif page == "🔄 Trade Analyzer":
-    # team_data / league_avgs / all_players_by_pos already computed above tabs
-    # ── Team selector ─────────────────────────────────────────────────────────
-    _ta_opts    = sorted(team_name_to_rid.keys())
-    _ta_default = st.session_state.get("_sticky_ta_team")
-    if _ta_default not in _ta_opts:   # no choice this session → default to My Team
-        _ta_default = my_team if my_team in _ta_opts else _ta_opts[0]
-    sel_ta_team = st.selectbox(
-        "Select team to analyze",
-        _ta_opts,
-        index=_ta_opts.index(_ta_default),
-        key="ta_team",
-    )
-    st.session_state._sticky_ta_team = sel_ta_team
-    rid = team_name_to_rid[sel_ta_team]
-    td  = team_data[rid]
+    @st.fragment
+    def _frag_trade_analyzer():
+        # team_data / league_avgs / all_players_by_pos already computed above tabs
+        # ── Team selector ─────────────────────────────────────────────────────────
+        _ta_opts    = sorted(team_name_to_rid.keys())
+        _ta_default = st.session_state.get("_sticky_ta_team")
+        if _ta_default not in _ta_opts:   # no choice this session → default to My Team
+            _ta_default = my_team if my_team in _ta_opts else _ta_opts[0]
+        sel_ta_team = st.selectbox(
+            "Select team to analyze",
+            _ta_opts,
+            index=_ta_opts.index(_ta_default),
+            key="ta_team",
+        )
+        st.session_state._sticky_ta_team = sel_ta_team
+        rid = team_name_to_rid[sel_ta_team]
+        td  = team_data[rid]
 
-    # Set of Untouchable player names for THIS team — excluded from all trade-away lists
-    _player_tags = st.session_state.player_tags
-    _untouchable = {
-        p["name"] for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
-        if _player_tags.get(p["name"]) == "Untouchable"
-    }
+        # Set of Untouchable player names for THIS team — excluded from all trade-away lists
+        _player_tags = st.session_state.player_tags
+        _untouchable = {
+            p["name"] for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
+            if _player_tags.get(p["name"]) == "Untouchable"
+        }
 
-    # ── Player status tags ────────────────────────────────────────────────────
-    with st.expander("🏷️ Tag players (Untouchable / Keep / Trade / Cut)", expanded=False):
-        _ta_players = [
+        # ── Player status tags ────────────────────────────────────────────────────
+        with st.expander("🏷️ Tag players (Untouchable / Keep / Trade / Cut)", expanded=False):
+            _ta_players = [
+                {"name": p["name"], "pos": _pos, "value": p["value"]}
+                for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
+            ]
+            _ta_players.sort(key=lambda x: x["value"] or 0, reverse=True)
+            st.caption(f"Tagging **{sel_ta_team.strip()}** · 🔒 Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
+            tag_editor(_ta_players, "tags_trade")
+
+        # ── Your trade block (players tagged 🔄 Trade) ────────────────────────────
+        _trade_block = [
             {"name": p["name"], "pos": _pos, "value": p["value"]}
             for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
+            if _player_tags.get(p["name"]) == "Trade"
         ]
-        _ta_players.sort(key=lambda x: x["value"] or 0, reverse=True)
-        st.caption(f"Tagging **{sel_ta_team.strip()}** · 🔒 Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
-        tag_editor(_ta_players, "tags_trade")
-
-    # ── Your trade block (players tagged 🔄 Trade) ────────────────────────────
-    _trade_block = [
-        {"name": p["name"], "pos": _pos, "value": p["value"]}
-        for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
-        if _player_tags.get(p["name"]) == "Trade"
-    ]
-    if _trade_block:
-        _trade_block.sort(key=lambda x: x["value"] or 0, reverse=True)
-        st.markdown("**🔄 Your Trade Block**")
-        st.dataframe(
-            pd.DataFrame([{"Player": p["name"], "Pos": p["pos"], val_col: p["value"]} for p in _trade_block]),
-            use_container_width=True, hide_index=True,
-            column_config={val_col: COL_CFG["Value"]},
-        )
-
-    st.divider()
-
-    # ── Positional strength — summary banner + detail table ──────────────────
-    st.subheader("Positional Strength vs League Average")
-    st.caption(f"Score (0–100) = league rank (40%) + value gap (40%) + depth drop-off (20%) · "
-               f"based on value source: **{value_source}** (change in sidebar)")
-
-    _n_teams   = len(team_data)
-    _need_pos  = td.get("need_pos")
-    _surp_pos  = td.get("surplus_pos")
-    _need_sc   = td.get("need_scores",    {}).get(_need_pos)
-    _surp_sc   = td.get("surplus_scores", {}).get(_surp_pos)
-    _need_rank = td.get("pos_league_rank",{}).get(_need_pos)
-    _surp_rank = td.get("pos_league_rank",{}).get(_surp_pos)
-    _need_lbl  = "Draft Picks" if _need_pos == "PICK" else (_need_pos or "—")
-    _surp_lbl  = "Draft Picks" if _surp_pos == "PICK" else (_surp_pos or "—")
-
-    # ── Summary banner ────────────────────────────────────────────────────────
-    ban_l, ban_r = st.columns(2)
-    ban_l.markdown(
-        f"""<div style="background:linear-gradient(135deg,#3d0c0c,#5c1a1a);
-            border:1px solid #c0392b; border-radius:10px; padding:16px 20px;">
-            <div style="font-size:0.72rem; color:#e88; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:6px;">
-                ▼ Priority Need
-            </div>
-            <div style="font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:4px;">{_need_lbl}</div>
-            <div style="font-size:0.9rem; color:#f5a5a5;">
-                Score <strong>{f'{_need_sc:.0f}' if _need_sc is not None else '—'}/100</strong>
-                &nbsp;·&nbsp; Rank <strong>#{_need_rank}/{_n_teams}</strong>
-            </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-    ban_r.markdown(
-        f"""<div style="background:linear-gradient(135deg,#0c2e1a,#134d29);
-            border:1px solid #27ae60; border-radius:10px; padding:16px 20px;">
-            <div style="font-size:0.72rem; color:#7ec; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:6px;">
-                ▲ Biggest Surplus
-            </div>
-            <div style="font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:4px;">{_surp_lbl}</div>
-            <div style="font-size:0.9rem; color:#a8efc8;">
-                Score <strong>{f'{_surp_sc:.0f}' if _surp_sc is not None else '—'}/100</strong>
-                &nbsp;·&nbsp; Rank <strong>#{_surp_rank}/{_n_teams}</strong>
-            </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div style='margin-top:1rem'></div>", unsafe_allow_html=True)
-
-    # ── Detail table — all positions ──────────────────────────────────────────
-    _tbl_rows = []
-    for dim in ANALYSIS_DIMENSIONS:
-        avg       = td["pos_avgs"].get(dim)
-        rel       = td["relative"].get(dim)
-        lg_avg    = league_avgs.get(dim)
-        rank      = td.get("pos_league_rank", {}).get(dim)
-        depth_raw = td.get("depth_scores",    {}).get(dim)
-        ns        = td.get("need_scores",     {}).get(dim)
-        ss        = td.get("surplus_scores",  {}).get(dim)
-        lbl       = "Draft Picks" if dim == "PICK" else dim
-        if ns is not None and ss is not None:
-            if ns >= ss and ns >= 20:   status = f"▼ Need"
-            elif ss > ns and ss >= 20:  status = f"▲ Surplus"
-            else:                        status = "~ Average"
-            score = ns if (ns >= ss) else ss
-        else:
-            status = "—"; score = None
-        depth_lbl = "—"
-        if depth_raw is not None and dim in SKILL_POSITIONS:
-            depth_lbl = "Shallow" if depth_raw >= 0.6 else ("Moderate" if depth_raw >= 0.3 else "Deep")
-        _tbl_rows.append({
-            "Position":   lbl,
-            "Your Avg":   int(avg)    if avg    is not None else None,
-            "League Avg": int(lg_avg) if lg_avg is not None else None,
-            "vs Avg":     f"{rel:+.1f}%" if rel is not None else "—",
-            "Rank":       f"#{rank}/{_n_teams}" if rank else "—",
-            "Score":      round(score) if score is not None else None,
-            "Depth":      depth_lbl,
-            "Status":     status,
-        })
-
-    # Sort: needs first (by score desc), then average, then surpluses (by score desc)
-    def _tbl_sort(r):
-        s = r["Score"] or 0
-        if "Need" in r["Status"]:    return (0, -s)
-        if "Average" in r["Status"]: return (1, 0)
-        return (2, -s)
-    _tbl_rows.sort(key=_tbl_sort)
-
-    st.dataframe(
-        pd.DataFrame(_tbl_rows),
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Your Avg":   st.column_config.NumberColumn("Your Avg",   format="%d"),
-            "League Avg": st.column_config.NumberColumn("League Avg", format="%d"),
-            "Score":      st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
-        },
-    )
-
-    # ── Full breakdown table ───────────────────────────────────────────────────
-    with st.expander("Full positional breakdown (players + picks)", expanded=False):
-        breakdown_rows = []
-
-        def _player_status(rel):
-            if rel is None:   return "—"
-            if rel >= 15:     return "🟢 Well Above Avg"
-            if rel >= 5:      return "🟡 Above Avg"
-            if rel >= -5:     return "⚪ Near Avg"
-            if rel >= -15:    return "🟠 Below Avg"
-            return "🔴 Well Below Avg"
-
-        # Players by position — each player vs league avg for that position
-        for pos in SKILL_POSITIONS:
-            lg_avg = league_avgs.get(pos, 0)
-            for player in td["pos_players"][pos]:
-                pval = player["value"]
-                prel = (pval - lg_avg) / lg_avg * 100 if lg_avg else None
-                breakdown_rows.append({
-                    "Type":        pos,
-                    "Asset":       player["name"],
-                    val_col:       pval,
-                    "League Avg":  int(lg_avg) if lg_avg else 0,
-                    "vs Lg Avg":   f"{prel:+.1f}%" if prel is not None else "—",
-                    "Status":      _player_status(prel),
-                })
-
-        # Picks — each pick vs league avg pick value
-        lg_pick = league_avgs.get("PICK", 0)
-        for pick in td["picks"]:
-            pval = pick["value"]
-            prel = (pval - lg_pick) / lg_pick * 100 if lg_pick else None
-            breakdown_rows.append({
-                "Type":        "PICK",
-                "Asset":       pick["label"],
-                val_col:       pval,
-                "League Avg":  int(lg_pick) if lg_pick else 0,
-                "vs Lg Avg":   f"{prel:+.1f}%" if prel is not None else "—",
-                "Status":      _player_status(prel),
-            })
-
-        st.dataframe(
-            pd.DataFrame(breakdown_rows), use_container_width=True, hide_index=True,
-            column_config={
-                val_col:      COL_CFG["Value"],
-                "League Avg": COL_CFG["League Avg"],
-            },
-        )
-
-    st.divider()
-
-    # ── Best Trade Partners ───────────────────────────────────────────────────
-    st.subheader("🤝 Best Trade Partners")
-    st.caption(
-        "Ranked by mutual trade fit: how much they have what you need (40%) + "
-        "how much they need what you have (40%) + value proximity (20%). "
-        "Sample trades pair their target with your closest-value surplus piece — a balanced starting point, not your franchise asset."
-    )
-
-    _auto_need    = td.get("need_pos")
-    _auto_surplus = td.get("surplus_pos")
-
-    _tp_col_a, _tp_col_b = st.columns(2)
-    _need_override = _tp_col_a.selectbox(
-        "I need (position)",
-        options=["Auto — " + (_auto_need or "none")] + SKILL_POSITIONS,
-        index=0,
-        key="tp_need_override",
-    )
-    _surplus_override = _tp_col_b.selectbox(
-        "I can offer (position)",
-        options=["Auto — " + (_auto_surplus or "none")] + SKILL_POSITIONS,
-        index=0,
-        key="tp_surplus_override",
-    )
-
-    _my_need    = _auto_need    if _need_override.startswith("Auto")    else _need_override
-    _my_surplus = _auto_surplus if _surplus_override.startswith("Auto") else _surplus_override
-
-    if not _my_need or not _my_surplus or _my_need == _my_surplus:
-        st.info("No clear positional imbalance — trade partner ranking requires at least one need and one surplus position.")
-    else:
-        _my_surplus_players = [p for p in td.get("pos_players", {}).get(_my_surplus, [])
-                               if p["name"] not in _untouchable]
-
-        _partner_rows = []
-        for _o_rid, _o_td in team_data.items():
-            if _o_rid == rid:
-                continue
-
-            # How much does the other team have what I need?
-            _their_supply = _o_td.get("surplus_scores", {}).get(_my_need, 0)
-            # How much does the other team need what I have?
-            _their_need   = _o_td.get("need_scores", {}).get(_my_surplus, 0)
-
-            # Their headline asset at my need position (the appealing target)
-            _their_candidates = _o_td.get("pos_players", {}).get(_my_need, [])
-            _their_give_val   = _their_candidates[0]["value"] if _their_candidates else 0
-            _their_give_name  = _their_candidates[0]["name"]  if _their_candidates else "—"
-
-            # Value-match MY side: offer the surplus player closest in value to what I'd get,
-            # not my franchise asset — produces a realistic, balanced 1-for-1 sample.
-            if _my_surplus_players and _their_give_val > 0:
-                _match = min(_my_surplus_players, key=lambda p: abs((p["value"] or 0) - _their_give_val))
-                _my_give_val, _my_give_name = _match["value"] or 0, _match["name"]
-            elif _my_surplus_players:
-                _my_give_val, _my_give_name = _my_surplus_players[0]["value"] or 0, _my_surplus_players[0]["name"]
-            else:
-                _my_give_val, _my_give_name = 0, "—"
-
-            if _my_give_val > 0 and _their_give_val > 0:
-                _val_gap   = abs(_my_give_val - _their_give_val)
-                _proximity = max(0.0, 1.0 - _val_gap / max(_my_give_val, _their_give_val)) * 100
-            else:
-                _proximity = 50.0  # neutral when no data
-
-            _fit = _their_supply * 0.4 + _their_need * 0.4 + _proximity * 0.2
-
-            _supply_lbl = ("🟢 Strong" if _their_supply >= 50 else
-                           "🟡 Moderate" if _their_supply >= 20 else "🔴 Weak")
-            _need_lbl   = ("🔴 High"   if _their_need   >= 50 else
-                           "🟡 Medium" if _their_need   >= 20 else "🟢 Low")
-            _vdiff_str  = f"{_their_give_val - _my_give_val:+,}" if _my_give_val and _their_give_val else "—"
-
-            _partner_rows.append({
-                "Team":                   _o_td["name"],
-                "Fit Score":              round(_fit),
-                f"Their {_my_need} Supply": _supply_lbl,
-                f"Their Need for {_my_surplus}": _need_lbl,
-                "Sample: You Give":       f"{_my_give_name}  ({_my_surplus} · {_my_give_val:,})" if _my_give_val else _my_give_name,
-                "Sample: You Get":        f"{_their_give_name}  ({_my_need} · {_their_give_val:,})" if _their_give_val else _their_give_name,
-                "Value Diff":             _vdiff_str,
-            })
-
-        _partner_rows.sort(key=lambda x: x["Fit Score"], reverse=True)
-        # Add rank
-        for _i, _row in enumerate(_partner_rows):
-            _row["#"] = _i + 1
-
-        # Show top 3 highlighted, full table in expander
-        _top3 = _partner_rows[:3]
-        _cols_show = ["#", "Team", "Fit Score", f"Their {_my_need} Supply",
-                      f"Their Need for {_my_surplus}", "Sample: You Give", "Sample: You Get", "Value Diff"]
-        st.markdown("**Top 3 Suitors**")
-        st.dataframe(
-            pd.DataFrame(_top3)[_cols_show],
-            use_container_width=True, hide_index=True,
-            column_config={"Fit Score": st.column_config.ProgressColumn(
-                "Fit Score", min_value=0, max_value=100, format="%d"
-            )},
-        )
-        with st.expander("Full league ranking", expanded=False):
+        if _trade_block:
+            _trade_block.sort(key=lambda x: x["value"] or 0, reverse=True)
+            st.markdown("**🔄 Your Trade Block**")
             st.dataframe(
-                pd.DataFrame(_partner_rows)[_cols_show],
-                use_container_width=True, hide_index=True,
-                column_config={"Fit Score": st.column_config.ProgressColumn(
-                    "Fit Score", min_value=0, max_value=100, format="%d"
-                )},
+                pd.DataFrame([{"Player": p["name"], "Pos": p["pos"], val_col: p["value"]} for p in _trade_block]),
+                width="stretch", hide_index=True,
+                column_config={val_col: COL_CFG["Value"]},
             )
 
-    st.divider()
+        st.divider()
 
-    # ── Section A: Auto Trade Suggestions ────────────────────────────────────
-    st.subheader("A · Auto Suggestions")
+        # ── Positional strength — summary banner + detail table ──────────────────
+        st.subheader("Positional Strength vs League Average")
+        st.caption(f"Score (0–100) = league rank (40%) + value gap (40%) + depth drop-off (20%) · "
+                   f"based on value source: **{value_source}** (change in sidebar)")
 
-    surplus_pos = td["surplus_pos"]
-    need_pos    = td["need_pos"]
+        _n_teams   = len(team_data)
+        _need_pos  = td.get("need_pos")
+        _surp_pos  = td.get("surplus_pos")
+        _need_sc   = td.get("need_scores",    {}).get(_need_pos)
+        _surp_sc   = td.get("surplus_scores", {}).get(_surp_pos)
+        _need_rank = td.get("pos_league_rank",{}).get(_need_pos)
+        _surp_rank = td.get("pos_league_rank",{}).get(_surp_pos)
+        _need_lbl  = "Draft Picks" if _need_pos == "PICK" else (_need_pos or "—")
+        _surp_lbl  = "Draft Picks" if _surp_pos == "PICK" else (_surp_pos or "—")
 
-    def _pos_status(target_rid, pos):
-        """Surplus / Deficit / Average for a team at a given position (handles PICK via relative%)."""
-        owner_td = team_data.get(target_rid, {})
-        if pos == "PICK":
-            rel = owner_td.get("relative", {}).get("PICK")
-            if rel is None: return "—"
-            if rel >= 10:   return "🟢 Surplus"
-            if rel <= -10:  return "🔴 Deficit"
-            return "🟡 Average"
-        ns = owner_td.get("need_scores",    {}).get(pos)
-        ss = owner_td.get("surplus_scores", {}).get(pos)
-        if ns is None or ss is None: return "—"
-        if ss > ns and ss >= 20:  return "🟢 Surplus"
-        if ns > ss and ns >= 20:  return "🔴 Deficit"
-        return "🟡 Average"
-
-    # Two toggles: shop the explicit Trade Block, and whether to include Untouchables
-    _sa_c1, _sa_c2 = st.columns(2)
-    _shop_block = _sa_c1.checkbox(
-        "🔄 Shop my Trade Block", value=bool(_trade_block),
-        help="Drive suggestions from players you tagged 🔄 Trade, instead of auto-detected surplus.",
-        key="ta_shop_block",
-    )
-    _incl_untouch = _sa_c2.checkbox(
-        "Include Untouchables", value=False,
-        help="Also include players tagged 🔒 Untouchable in the suggestions.",
-        key="ta_incl_untouch",
-    )
-    _need_for_targets = need_pos if need_pos in SKILL_POSITIONS else None
-
-    if (not _shop_block or not _trade_block) and (not surplus_pos or not need_pos or surplus_pos == need_pos):
-        st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players 🔄 Trade to shop them directly.")
-    else:
-        if _shop_block and _trade_block:
-            # Suggestions driven by YOUR trade block: shop each tagged player for your need
-            suggestions = []
-            for _bp in _trade_block:
-                _tg = sorted(
-                    [p for p in all_players_by_pos.get(_need_for_targets, []) if p["on_team_rid"] != rid],
-                    key=lambda p: abs((p["value"] or 0) - (_bp["value"] or 0)),
-                )[:3] if _need_for_targets else []
-                suggestions.append({
-                    "type": "player",
-                    "asset": {"name": _bp["name"], "value": _bp["value"]},
-                    "asset_pos": _bp["pos"],
-                    "want_pos": _need_for_targets or "—",
-                    "targets": _tg,
-                })
-        else:
-            suggestions = td.get("suggestions", [])
-            if not _incl_untouch:   # default: never offer an Untouchable player
-                suggestions = [s for s in suggestions
-                               if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
-        if not suggestions or not any(s.get("targets") for s in suggestions):
-            st.info("Not enough data to generate suggestions — tag players 🔄 Trade, or check you have a clear positional need.")
-        else:
-            # ── Top 5 ideal player-for-player targets ─────────────────────────
-            # Score each candidate: +2 if target has surplus of need_pos,
-            # +2 if target team needs the asset_pos, then sort by score desc,
-            # value proximity asc within each score tier.
-            _candidates = []
-            for sug in suggestions:
-                if sug["type"] != "player":
-                    continue
-                _asset    = sug["asset"]
-                _want_pos = sug["want_pos"]
-                _apos     = sug["asset_pos"]
-                for t in sug["targets"]:
-                    _tpn  = _pos_status(t["on_team_rid"], _want_pos)
-                    _ttpn = _pos_status(t["on_team_rid"], _apos)
-                    _fit  = (2 if "Surplus" in _tpn  else 0) + \
-                            (2 if "Deficit" in _ttpn else 0)
-                    _vdiff = abs(t["value"] - _asset["value"])
-                    _candidates.append({
-                        "Trade Away":                f"{_asset['name']}  ({_apos})",
-                        "Target Player":             f"{t['name']}  ({_want_pos})",
-                        "Currently On":              t["on_team"],
-                        val_col:                  t["value"],
-                        "Value Diff":                f"{t['value'] - _asset['value']:+,}",
-                        "Their Target Supply":      _tpn,
-                        "Need for Your Asset": _ttpn,
-                        "_fit":   _fit,
-                        "_vdiff": _vdiff,
-                    })
-
-            if _candidates:
-                _candidates.sort(key=lambda x: (-x["_fit"], x["_vdiff"]))
-                _top5 = [{k: v for k, v in c.items() if not k.startswith("_")}
-                         for c in _candidates[:5]]
-                st.markdown("**🏆 Top 5 Ideal Player-for-Player Targets**")
-                st.caption("Ranked by trade fit (both teams benefit) then closest value.")
-                st.dataframe(
-                    pd.DataFrame(_top5),
-                    use_container_width=True, hide_index=True,
-                    key="sug_top5",
-                    column_config={val_col: COL_CFG["Value"]},
-                )
-                st.markdown("---")
-
-            st.caption("Full suggestion details by asset:")
-            for sug in suggestions:
-                asset    = sug["asset"]
-                want_pos = sug["want_pos"]
-                targets  = sug["targets"]
-
-                if sug["type"] == "player":
-                    header = (
-                        f"**Trade away** — {sug['asset_pos']}: **{asset['name']}** "
-                        f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
-                    )
-                else:
-                    header = (
-                        f"**Use pick** — **{asset['label']}** "
-                        f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
-                    )
-
-                st.markdown(header)
-                if not targets:
-                    st.caption("No matching targets found on other rosters.")
-                else:
-                    asset_val  = asset["value"]
-                    asset_pos  = sug["asset_pos"]
-
-                    st.dataframe(
-                        pd.DataFrame([{
-                            "Player":                    f"{t['name']}  ({want_pos})",
-                            "Currently On":              t["on_team"],
-                            val_col:                  t["value"],
-                            "Value Diff":                f"{t['value'] - asset_val:+,}",
-                            "Their Target Supply":      _pos_status(t["on_team_rid"], want_pos),
-                            "Need for Your Asset": _pos_status(t["on_team_rid"], asset_pos),
-                        } for t in targets]),
-                        use_container_width=True, hide_index=True,
-                        key=f"sug_{asset.get('pid', asset.get('label', ''))}",
-                        column_config={val_col: COL_CFG["Value"]},
-                    )
-                st.markdown("---")
-
-    st.divider()
-
-    # ── Section B: Defensive Strength (IDP/DEF) ───────────────────────────────
-    st.subheader("B · Defensive Strength (IDP / DEF)")
-    st.caption(
-        "Pools DL + LB + DB + DEF positions. Ranked by average 2025 fantasy points "
-        "(league scoring), compared to the league average. Kickers excluded."
-    )
-
-    team_def_entry = def_analysis.get(rid, {})
-    def_avg_pts    = team_def_entry.get("avg_pts", 0)
-    def_count      = team_def_entry.get("player_count", 0)
-    def_rel        = (def_avg_pts - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
-    def_suffix     = "▲ Surplus" if def_rel >= 5 else ("▼ Need" if def_rel <= -5 else "~ Average")
-
-    d1, d2, d3 = st.columns(3)
-    d1.metric(
-        label=f"DEF Avg Pts  ({def_suffix})",
-        value=f"{def_avg_pts:.1f}",
-        delta=f"{def_rel:+.1f}% vs league avg ({league_def_avg:.1f})",
-        delta_color="normal",
-    )
-    d2.metric("IDP/DEF Players on Roster", def_count)
-    d3.metric("League DEF Avg Pts", f"{league_def_avg:.1f}")
-
-    # League-wide DEF ranking table
-    with st.expander("Full league DEF ranking", expanded=False):
-        def_rows = []
-        for r2id, de in def_analysis.items():
-            r2_rel = (de["avg_pts"] - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
-            def_rows.append({
-                "Team":       de["name"],
-                "Avg Pts":    round(de["avg_pts"], 1),
-                "Players":    de["player_count"],
-                "vs League":  f"{r2_rel:+.1f}%",
-            })
-        def_rows.sort(key=lambda r: r["Avg Pts"], reverse=True)
-        for i, row in enumerate(def_rows):
-            row["Rank"] = i + 1
-        df_def_rank = pd.DataFrame(def_rows)[["Rank", "Team", "Avg Pts", "Players", "vs League"]]
-        st.dataframe(df_def_rank, use_container_width=True, hide_index=True,
-                     column_config={"Avg Pts": COL_CFG["Avg Pts"]})
-
-    # Individual DEF players for selected team
-    def_players = team_def_entry.get("players", [])
-    if def_players:
-        with st.expander(f"{sel_ta_team} — individual DEF/IDP players", expanded=False):
-            st.dataframe(
-                pd.DataFrame([{
-                    "Player": p["name"], "Pos": p["pos"],
-                    f"{STATS_SEASON} Pts": round(p["pts"], 1),
-                } for p in def_players]),
-                use_container_width=True, hide_index=True,
-                column_config={f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"]},
-            )
-
-    st.divider()
-
-    # ── Section C: Manual Trade Analyzer ─────────────────────────────────────
-    st.subheader("C · Manual Trade Analyzer")
-    st.caption("Pick any player or pick from this team's roster, choose your target position, and see closest-value options across the league.")
-
-    # Build asset options: all players with FC values + all valued picks
-    # (Untouchable players stay selectable here — this is manual exploration —
-    #  but get a 🔒 marker so the intent is visible.)
-    asset_options = []
-    for pos in SKILL_POSITIONS:
-        for player in td["pos_players"][pos]:
-            _lock = "🔒 " if player["name"] in _untouchable else ""
-            asset_options.append({
-                "label":     f"{_lock}{player['name']}  ({pos})  —  {player['value']:,}",
-                "value":     player["value"],
-                "type":      "player",
-                "pos":       pos,
-                "name":      player["name"],
-            })
-    for pick in td["picks"]:
-        asset_options.append({
-            "label":  f"{pick['label']}  —  {pick['value']:,}",
-            "value":  pick["value"],
-            "type":   "pick",
-            "pos":    "PICK",
-            "name":   pick["label"],
-        })
-
-    if not asset_options:
-        st.info("No FC-valued assets found for this team.")
-    else:
-        col_a, col_b = st.columns([3, 1])
-        sel_asset_label = col_a.selectbox(
-            "Asset to trade away (player or pick)",
-            options=[a["label"] for a in asset_options],
-            key="man_asset",
+        # ── Summary banner ────────────────────────────────────────────────────────
+        ban_l, ban_r = st.columns(2)
+        ban_l.markdown(
+            f"""<div style="background:linear-gradient(135deg,#3d0c0c,#5c1a1a);
+                border:1px solid #c0392b; border-radius:10px; padding:16px 20px;">
+                <div style="font-size:0.72rem; color:#e88; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:6px;">
+                    ▼ Priority Need
+                </div>
+                <div style="font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:4px;">{_need_lbl}</div>
+                <div style="font-size:0.9rem; color:#f5a5a5;">
+                    Score <strong>{f'{_need_sc:.0f}' if _need_sc is not None else '—'}/100</strong>
+                    &nbsp;·&nbsp; Rank <strong>#{_need_rank}/{_n_teams}</strong>
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
         )
-        # Default Target to the team's priority need; if that equals the default
-        # asset's position, fall back to the next-biggest need (never QB-for-QB).
-        _needs_ranked = [p for p, _ in sorted(td.get("need_scores", {}).items(),
-                                              key=lambda x: x[1], reverse=True)]
-        _default_asset_pos = asset_options[0]["pos"] if asset_options else None
-        _target_default = next((p for p in _needs_ranked if p != _default_asset_pos), None)
-        _target_idx = SKILL_POSITIONS.index(_target_default) if _target_default in SKILL_POSITIONS else 0
-        sel_target_pos = col_b.selectbox(
-            "Target position",
-            options=SKILL_POSITIONS,
-            index=_target_idx,
-            key="man_target_pos",
-        )
-
-        # Find the selected asset
-        sel_asset = next((a for a in asset_options if a["label"] == sel_asset_label), None)
-
-        if sel_asset:
-            asset_val = sel_asset["value"]
-            # Find all players in target position on OTHER teams
-            pool = [
-                p for p in all_players_by_pos[sel_target_pos]
-                if p["on_team_rid"] != rid
-            ]
-            pool.sort(key=lambda p: abs(p["value"] - asset_val))
-
-            if not pool:
-                st.info(f"No {sel_target_pos}s with FC values found on other rosters.")
-            else:
-                st.markdown(
-                    f"Trading **{sel_asset['name']}** ({val_col}: **{asset_val:,}**) — "
-                    f"closest-value **{sel_target_pos}s** on other rosters:"
-                )
-                def _man_pos_status(target_rid, pos):
-                    owner_td = team_data.get(target_rid, {})
-                    ns = owner_td.get("need_scores",    {}).get(pos)
-                    ss = owner_td.get("surplus_scores", {}).get(pos)
-                    if ns is None or ss is None:
-                        return "—"
-                    if ss > ns and ss >= 20:  return "🟢 Surplus"
-                    if ns > ss and ns >= 20:  return "🔴 Deficit"
-                    return "🟡 Average"
-
-                # Score each candidate: fit (mutual benefit) first, then closest value
-                scored_pool = []
-                for p in pool:
-                    diff      = p["value"] - asset_val
-                    supply    = _man_pos_status(p["on_team_rid"], sel_target_pos)
-                    asset_need = _man_pos_status(p["on_team_rid"], sel_asset["pos"])
-                    fit = (2 if "Surplus" in supply   else 0) + \
-                          (2 if "Deficit" in asset_need else 0)
-                    scored_pool.append((p, diff, supply, asset_need, fit))
-                scored_pool.sort(key=lambda x: (-x[4], abs(x[1])))
-
-                rows = []
-                for p, diff, supply, asset_need, _ in scored_pool[:10]:
-                    rows.append({
-                        "Player":              p["name"],
-                        "Currently On":        p["on_team"],
-                        val_col:               p["value"],
-                        "Value Diff":          f"{diff:+,}",
-                        "Their Target Supply": supply,
-                        "Need for Your Asset": asset_need,
-                    })
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    use_container_width=True, hide_index=True,
-                    key="man_results",
-                    column_config={val_col: COL_CFG["Value"]},
-                )
-
-    st.divider()
-
-    # ── Section D: Trade Calculator ──────────────────────────────────────────
-    st.subheader("D · Trade Calculator")
-    st.caption(
-        f"Weighed on **{value_source}** values — FantasyCalc already reflects your league's "
-        "Superflex / PPR / team-count scoring. Pick the two teams, add players & picks, "
-        "and the fairness read updates live."
-    )
-
-    # Per-team asset universe (normalised to 0–10K), so each side filters to its team
-    _team_assets = {}
-    for _r2, _t2 in team_data.items():
-        _d = {}
-        for _p2 in SKILL_POSITIONS:
-            for _pl in _t2["pos_players"].get(_p2, []):
-                _v = _pl["value"] or 0
-                if _v:
-                    _d[f"{_pl['name']}  ({_p2}) — {_v:,}"] = _v
-        for _pk in _t2.get("picks", []):
-            _v = round((_pk["value"] or 0) / 10282 * 10000)
-            if _v:
-                _d[f"{_pk['label']}  (Pick) — {_v:,}"] = _v
-        _team_assets[_t2["name"]] = _d
-
-    _all_teams = sorted(_team_assets.keys())
-    _a_default = my_team if my_team in _all_teams else _all_teams[0]
-    _b_default = next((t for t in _all_teams if t != _a_default), _all_teams[0])
-
-    _cc1, _cc2 = st.columns(2)
-    with _cc1:
-        st.markdown("<span style='color:#2196F3; font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
-        _team_a = st.selectbox("Team A", _all_teams, index=_all_teams.index(_a_default),
-                               key="calc_team_a", label_visibility="collapsed")
-        # Key includes the team so switching teams never carries stale options
-        _side_a = st.multiselect("Players & picks", sorted(_team_assets[_team_a].keys()),
-                                 key=f"calc_side_a_{_team_a}", placeholder=f"Add from {_team_a}…",
-                                 label_visibility="collapsed")
-    with _cc2:
-        st.markdown("<span style='color:#ff5a5f; font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
-        _team_b = st.selectbox("Team B", _all_teams, index=_all_teams.index(_b_default),
-                               key="calc_team_b", label_visibility="collapsed")
-        _side_b = st.multiselect("Players & picks", sorted(_team_assets[_team_b].keys()),
-                                 key=f"calc_side_b_{_team_b}", placeholder=f"Add from {_team_b}…",
-                                 label_visibility="collapsed")
-
-    _tot_a = sum(_team_assets[_team_a].get(x, 0) for x in _side_a)
-    _tot_b = sum(_team_assets[_team_b].get(x, 0) for x in _side_b)
-
-    if not _side_a or not _side_b:
-        st.info("Add at least one asset to **each** side to weigh the trade.")
-    else:
-        _gap     = _tot_b - _tot_a
-        _bigger  = max(_tot_a, _tot_b) or 1
-        _gap_pct = abs(_gap) / _bigger * 100
-        _sum     = (_tot_a + _tot_b) or 1
-        _pa      = round(_tot_a / _sum * 100)
-        if _gap_pct <= 5:
-            _badge_bg, _badge_tx = "#0c2e1a", "#7ee2a8"
-            _verdict = f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
-        else:
-            _badge_bg, _badge_tx = "#3a2e0c", "#f5d27a"
-            _winner = _team_b if _gap > 0 else _team_a
-            _verdict = f"↘ Favours {_winner} by {abs(_gap):,} ({_gap_pct:.0f}%)"
-        st.markdown(
-            f"""<div style="border:1px solid #2d3140; border-radius:12px; padding:16px 18px; margin-top:4px;">
-              <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                <div><div style="font-size:0.72rem; color:#7ab4f0; text-transform:uppercase; letter-spacing:.06em;">{_team_a}</div>
-                     <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_a:,}</div></div>
-                <div style="text-align:center; align-self:center;">
-                     <span style="background:{_badge_bg}; color:{_badge_tx}; padding:5px 12px; border-radius:14px; font-size:0.82rem; font-weight:600;">{_verdict}</span></div>
-                <div style="text-align:right;"><div style="font-size:0.72rem; color:#f0a0a3; text-transform:uppercase; letter-spacing:.06em;">{_team_b}</div>
-                     <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_b:,}</div></div>
-              </div>
-              <div style="display:flex; height:20px; border-radius:6px; overflow:hidden; font-size:0.74rem; font-weight:600;">
-                <div style="width:{_pa}%; background:#2196F3; color:#fff; display:flex; align-items:center; justify-content:center;">{_pa}%</div>
-                <div style="width:{100 - _pa}%; background:#ff5a5f; color:#fff; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
-              </div>
+        ban_r.markdown(
+            f"""<div style="background:linear-gradient(135deg,#0c2e1a,#134d29);
+                border:1px solid #27ae60; border-radius:10px; padding:16px 20px;">
+                <div style="font-size:0.72rem; color:#7ec; letter-spacing:0.08em; text-transform:uppercase; margin-bottom:6px;">
+                    ▲ Biggest Surplus
+                </div>
+                <div style="font-size:1.6rem; font-weight:700; color:#fff; margin-bottom:4px;">{_surp_lbl}</div>
+                <div style="font-size:0.9rem; color:#a8efc8;">
+                    Score <strong>{f'{_surp_sc:.0f}' if _surp_sc is not None else '—'}/100</strong>
+                    &nbsp;·&nbsp; Rank <strong>#{_surp_rank}/{_n_teams}</strong>
+                </div>
             </div>""",
             unsafe_allow_html=True,
         )
 
-# ── Page: Draft Room ─────────────────────────────────────────────────────────
+        st.markdown("<div style='margin-top:1rem'></div>", unsafe_allow_html=True)
+
+        # ── Detail table — all positions ──────────────────────────────────────────
+        _tbl_rows = []
+        for dim in ANALYSIS_DIMENSIONS:
+            avg       = td["pos_avgs"].get(dim)
+            rel       = td["relative"].get(dim)
+            lg_avg    = league_avgs.get(dim)
+            rank      = td.get("pos_league_rank", {}).get(dim)
+            depth_raw = td.get("depth_scores",    {}).get(dim)
+            ns        = td.get("need_scores",     {}).get(dim)
+            ss        = td.get("surplus_scores",  {}).get(dim)
+            lbl       = "Draft Picks" if dim == "PICK" else dim
+            if ns is not None and ss is not None:
+                if ns >= ss and ns >= 20:   status = f"▼ Need"
+                elif ss > ns and ss >= 20:  status = f"▲ Surplus"
+                else:                        status = "~ Average"
+                score = ns if (ns >= ss) else ss
+            else:
+                status = "—"; score = None
+            depth_lbl = "—"
+            if depth_raw is not None and dim in SKILL_POSITIONS:
+                depth_lbl = "Shallow" if depth_raw >= 0.6 else ("Moderate" if depth_raw >= 0.3 else "Deep")
+            _tbl_rows.append({
+                "Position":   lbl,
+                "Your Avg":   int(avg)    if avg    is not None else None,
+                "League Avg": int(lg_avg) if lg_avg is not None else None,
+                "vs Avg":     f"{rel:+.1f}%" if rel is not None else "—",
+                "Rank":       f"#{rank}/{_n_teams}" if rank else "—",
+                "Score":      round(score) if score is not None else None,
+                "Depth":      depth_lbl,
+                "Status":     status,
+            })
+
+        # Sort: needs first (by score desc), then average, then surpluses (by score desc)
+        def _tbl_sort(r):
+            s = r["Score"] or 0
+            if "Need" in r["Status"]:    return (0, -s)
+            if "Average" in r["Status"]: return (1, 0)
+            return (2, -s)
+        _tbl_rows.sort(key=_tbl_sort)
+
+        st.dataframe(
+            pd.DataFrame(_tbl_rows),
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Your Avg":   st.column_config.NumberColumn("Your Avg",   format="%d"),
+                "League Avg": st.column_config.NumberColumn("League Avg", format="%d"),
+                "Score":      st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
+            },
+        )
+
+        # ── Full breakdown table ───────────────────────────────────────────────────
+        with st.expander("Full positional breakdown (players + picks)", expanded=False):
+            breakdown_rows = []
+
+            def _player_status(rel):
+                if rel is None:   return "—"
+                if rel >= 15:     return "🟢 Well Above Avg"
+                if rel >= 5:      return "🟡 Above Avg"
+                if rel >= -5:     return "⚪ Near Avg"
+                if rel >= -15:    return "🟠 Below Avg"
+                return "🔴 Well Below Avg"
+
+            # Players by position — each player vs league avg for that position
+            for pos in SKILL_POSITIONS:
+                lg_avg = league_avgs.get(pos, 0)
+                for player in td["pos_players"][pos]:
+                    pval = player["value"]
+                    prel = (pval - lg_avg) / lg_avg * 100 if lg_avg else None
+                    breakdown_rows.append({
+                        "Type":        pos,
+                        "Asset":       player["name"],
+                        val_col:       pval,
+                        "League Avg":  int(lg_avg) if lg_avg else 0,
+                        "vs Lg Avg":   f"{prel:+.1f}%" if prel is not None else "—",
+                        "Status":      _player_status(prel),
+                    })
+
+            # Picks — each pick vs league avg pick value
+            lg_pick = league_avgs.get("PICK", 0)
+            for pick in td["picks"]:
+                pval = pick["value"]
+                prel = (pval - lg_pick) / lg_pick * 100 if lg_pick else None
+                breakdown_rows.append({
+                    "Type":        "PICK",
+                    "Asset":       pick["label"],
+                    val_col:       pval,
+                    "League Avg":  int(lg_pick) if lg_pick else 0,
+                    "vs Lg Avg":   f"{prel:+.1f}%" if prel is not None else "—",
+                    "Status":      _player_status(prel),
+                })
+
+            st.dataframe(
+                pd.DataFrame(breakdown_rows), width="stretch", hide_index=True,
+                column_config={
+                    val_col:      COL_CFG["Value"],
+                    "League Avg": COL_CFG["League Avg"],
+                },
+            )
+
+        st.divider()
+
+        # ── Best Trade Partners ───────────────────────────────────────────────────
+        st.subheader("🤝 Best Trade Partners")
+        st.caption(
+            "Ranked by mutual trade fit: how much they have what you need (40%) + "
+            "how much they need what you have (40%) + value proximity (20%). "
+            "Sample trades pair their target with your closest-value surplus piece — a balanced starting point, not your franchise asset."
+        )
+
+        _auto_need    = td.get("need_pos")
+        _auto_surplus = td.get("surplus_pos")
+
+        _tp_col_a, _tp_col_b = st.columns(2)
+        _need_override = _tp_col_a.selectbox(
+            "I need (position)",
+            options=["Auto — " + (_auto_need or "none")] + SKILL_POSITIONS,
+            index=0,
+            key="tp_need_override",
+        )
+        _surplus_override = _tp_col_b.selectbox(
+            "I can offer (position)",
+            options=["Auto — " + (_auto_surplus or "none")] + SKILL_POSITIONS,
+            index=0,
+            key="tp_surplus_override",
+        )
+
+        _my_need    = _auto_need    if _need_override.startswith("Auto")    else _need_override
+        _my_surplus = _auto_surplus if _surplus_override.startswith("Auto") else _surplus_override
+
+        if not _my_need or not _my_surplus or _my_need == _my_surplus:
+            st.info("No clear positional imbalance — trade partner ranking requires at least one need and one surplus position.")
+        else:
+            _my_surplus_players = [p for p in td.get("pos_players", {}).get(_my_surplus, [])
+                                   if p["name"] not in _untouchable]
+
+            _partner_rows = []
+            for _o_rid, _o_td in team_data.items():
+                if _o_rid == rid:
+                    continue
+
+                # How much does the other team have what I need?
+                _their_supply = _o_td.get("surplus_scores", {}).get(_my_need, 0)
+                # How much does the other team need what I have?
+                _their_need   = _o_td.get("need_scores", {}).get(_my_surplus, 0)
+
+                # Their headline asset at my need position (the appealing target)
+                _their_candidates = _o_td.get("pos_players", {}).get(_my_need, [])
+                _their_give_val   = _their_candidates[0]["value"] if _their_candidates else 0
+                _their_give_name  = _their_candidates[0]["name"]  if _their_candidates else "—"
+
+                # Value-match MY side: offer the surplus player closest in value to what I'd get,
+                # not my franchise asset — produces a realistic, balanced 1-for-1 sample.
+                if _my_surplus_players and _their_give_val > 0:
+                    _match = min(_my_surplus_players, key=lambda p: abs((p["value"] or 0) - _their_give_val))
+                    _my_give_val, _my_give_name = _match["value"] or 0, _match["name"]
+                elif _my_surplus_players:
+                    _my_give_val, _my_give_name = _my_surplus_players[0]["value"] or 0, _my_surplus_players[0]["name"]
+                else:
+                    _my_give_val, _my_give_name = 0, "—"
+
+                if _my_give_val > 0 and _their_give_val > 0:
+                    _val_gap   = abs(_my_give_val - _their_give_val)
+                    _proximity = max(0.0, 1.0 - _val_gap / max(_my_give_val, _their_give_val)) * 100
+                else:
+                    _proximity = 50.0  # neutral when no data
+
+                _fit = _their_supply * 0.4 + _their_need * 0.4 + _proximity * 0.2
+
+                _supply_lbl = ("🟢 Strong" if _their_supply >= 50 else
+                               "🟡 Moderate" if _their_supply >= 20 else "🔴 Weak")
+                _need_lbl   = ("🔴 High"   if _their_need   >= 50 else
+                               "🟡 Medium" if _their_need   >= 20 else "🟢 Low")
+                _vdiff_str  = f"{_their_give_val - _my_give_val:+,}" if _my_give_val and _their_give_val else "—"
+
+                _partner_rows.append({
+                    "Team":                   _o_td["name"],
+                    "Fit Score":              round(_fit),
+                    f"Their {_my_need} Supply": _supply_lbl,
+                    f"Their Need for {_my_surplus}": _need_lbl,
+                    "Sample: You Give":       f"{_my_give_name}  ({_my_surplus} · {_my_give_val:,})" if _my_give_val else _my_give_name,
+                    "Sample: You Get":        f"{_their_give_name}  ({_my_need} · {_their_give_val:,})" if _their_give_val else _their_give_name,
+                    "Value Diff":             _vdiff_str,
+                })
+
+            _partner_rows.sort(key=lambda x: x["Fit Score"], reverse=True)
+            # Add rank
+            for _i, _row in enumerate(_partner_rows):
+                _row["#"] = _i + 1
+
+            # Show top 3 highlighted, full table in expander
+            _top3 = _partner_rows[:3]
+            _cols_show = ["#", "Team", "Fit Score", f"Their {_my_need} Supply",
+                          f"Their Need for {_my_surplus}", "Sample: You Give", "Sample: You Get", "Value Diff"]
+            st.markdown("**Top 3 Suitors**")
+            st.dataframe(
+                pd.DataFrame(_top3)[_cols_show],
+                width="stretch", hide_index=True,
+                column_config={"Fit Score": st.column_config.ProgressColumn(
+                    "Fit Score", min_value=0, max_value=100, format="%d"
+                )},
+            )
+            with st.expander("Full league ranking", expanded=False):
+                st.dataframe(
+                    pd.DataFrame(_partner_rows)[_cols_show],
+                    width="stretch", hide_index=True,
+                    column_config={"Fit Score": st.column_config.ProgressColumn(
+                        "Fit Score", min_value=0, max_value=100, format="%d"
+                    )},
+                )
+
+        st.divider()
+
+        # ── Section A: Auto Trade Suggestions ────────────────────────────────────
+        st.subheader("A · Auto Suggestions")
+
+        surplus_pos = td["surplus_pos"]
+        need_pos    = td["need_pos"]
+
+        def _pos_status(target_rid, pos):
+            """Surplus / Deficit / Average for a team at a given position (handles PICK via relative%)."""
+            owner_td = team_data.get(target_rid, {})
+            if pos == "PICK":
+                rel = owner_td.get("relative", {}).get("PICK")
+                if rel is None: return "—"
+                if rel >= 10:   return "🟢 Surplus"
+                if rel <= -10:  return "🔴 Deficit"
+                return "🟡 Average"
+            ns = owner_td.get("need_scores",    {}).get(pos)
+            ss = owner_td.get("surplus_scores", {}).get(pos)
+            if ns is None or ss is None: return "—"
+            if ss > ns and ss >= 20:  return "🟢 Surplus"
+            if ns > ss and ns >= 20:  return "🔴 Deficit"
+            return "🟡 Average"
+
+        # Two toggles: shop the explicit Trade Block, and whether to include Untouchables
+        _sa_c1, _sa_c2 = st.columns(2)
+        _shop_block = _sa_c1.checkbox(
+            "🔄 Shop my Trade Block", value=bool(_trade_block),
+            help="Drive suggestions from players you tagged 🔄 Trade, instead of auto-detected surplus.",
+            key="ta_shop_block",
+        )
+        _incl_untouch = _sa_c2.checkbox(
+            "Include Untouchables", value=False,
+            help="Also include players tagged 🔒 Untouchable in the suggestions.",
+            key="ta_incl_untouch",
+        )
+        _need_for_targets = need_pos if need_pos in SKILL_POSITIONS else None
+
+        if (not _shop_block or not _trade_block) and (not surplus_pos or not need_pos or surplus_pos == need_pos):
+            st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players 🔄 Trade to shop them directly.")
+        else:
+            if _shop_block and _trade_block:
+                # Suggestions driven by YOUR trade block: shop each tagged player for your need
+                suggestions = []
+                for _bp in _trade_block:
+                    _tg = sorted(
+                        [p for p in all_players_by_pos.get(_need_for_targets, []) if p["on_team_rid"] != rid],
+                        key=lambda p: abs((p["value"] or 0) - (_bp["value"] or 0)),
+                    )[:3] if _need_for_targets else []
+                    suggestions.append({
+                        "type": "player",
+                        "asset": {"name": _bp["name"], "value": _bp["value"]},
+                        "asset_pos": _bp["pos"],
+                        "want_pos": _need_for_targets or "—",
+                        "targets": _tg,
+                    })
+            else:
+                suggestions = td.get("suggestions", [])
+                if not _incl_untouch:   # default: never offer an Untouchable player
+                    suggestions = [s for s in suggestions
+                                   if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
+            if not suggestions or not any(s.get("targets") for s in suggestions):
+                st.info("Not enough data to generate suggestions — tag players 🔄 Trade, or check you have a clear positional need.")
+            else:
+                # ── Top 5 ideal player-for-player targets ─────────────────────────
+                # Score each candidate: +2 if target has surplus of need_pos,
+                # +2 if target team needs the asset_pos, then sort by score desc,
+                # value proximity asc within each score tier.
+                _candidates = []
+                for sug in suggestions:
+                    if sug["type"] != "player":
+                        continue
+                    _asset    = sug["asset"]
+                    _want_pos = sug["want_pos"]
+                    _apos     = sug["asset_pos"]
+                    for t in sug["targets"]:
+                        _tpn  = _pos_status(t["on_team_rid"], _want_pos)
+                        _ttpn = _pos_status(t["on_team_rid"], _apos)
+                        _fit  = (2 if "Surplus" in _tpn  else 0) + \
+                                (2 if "Deficit" in _ttpn else 0)
+                        _vdiff = abs(t["value"] - _asset["value"])
+                        _candidates.append({
+                            "Trade Away":                f"{_asset['name']}  ({_apos})",
+                            "Target Player":             f"{t['name']}  ({_want_pos})",
+                            "Currently On":              t["on_team"],
+                            val_col:                  t["value"],
+                            "Value Diff":                f"{t['value'] - _asset['value']:+,}",
+                            "Their Target Supply":      _tpn,
+                            "Need for Your Asset": _ttpn,
+                            "_fit":   _fit,
+                            "_vdiff": _vdiff,
+                        })
+
+                if _candidates:
+                    _candidates.sort(key=lambda x: (-x["_fit"], x["_vdiff"]))
+                    _top5 = [{k: v for k, v in c.items() if not k.startswith("_")}
+                             for c in _candidates[:5]]
+                    st.markdown("**🏆 Top 5 Ideal Player-for-Player Targets**")
+                    st.caption("Ranked by trade fit (both teams benefit) then closest value.")
+                    st.dataframe(
+                        pd.DataFrame(_top5),
+                        width="stretch", hide_index=True,
+                        key="sug_top5",
+                        column_config={val_col: COL_CFG["Value"]},
+                    )
+                    st.markdown("---")
+
+                st.caption("Full suggestion details by asset:")
+                for sug in suggestions:
+                    asset    = sug["asset"]
+                    want_pos = sug["want_pos"]
+                    targets  = sug["targets"]
+
+                    if sug["type"] == "player":
+                        header = (
+                            f"**Trade away** — {sug['asset_pos']}: **{asset['name']}** "
+                            f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
+                        )
+                    else:
+                        header = (
+                            f"**Use pick** — **{asset['label']}** "
+                            f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
+                        )
+
+                    st.markdown(header)
+                    if not targets:
+                        st.caption("No matching targets found on other rosters.")
+                    else:
+                        asset_val  = asset["value"]
+                        asset_pos  = sug["asset_pos"]
+
+                        st.dataframe(
+                            pd.DataFrame([{
+                                "Player":                    f"{t['name']}  ({want_pos})",
+                                "Currently On":              t["on_team"],
+                                val_col:                  t["value"],
+                                "Value Diff":                f"{t['value'] - asset_val:+,}",
+                                "Their Target Supply":      _pos_status(t["on_team_rid"], want_pos),
+                                "Need for Your Asset": _pos_status(t["on_team_rid"], asset_pos),
+                            } for t in targets]),
+                            width="stretch", hide_index=True,
+                            key=f"sug_{asset.get('pid', asset.get('label', ''))}",
+                            column_config={val_col: COL_CFG["Value"]},
+                        )
+                    st.markdown("---")
+
+        st.divider()
+
+        # ── Section B: Defensive Strength (IDP/DEF) ───────────────────────────────
+        st.subheader("B · Defensive Strength (IDP / DEF)")
+        st.caption(
+            "Pools DL + LB + DB + DEF positions. Ranked by average 2025 fantasy points "
+            "(league scoring), compared to the league average. Kickers excluded."
+        )
+
+        team_def_entry = def_analysis.get(rid, {})
+        def_avg_pts    = team_def_entry.get("avg_pts", 0)
+        def_count      = team_def_entry.get("player_count", 0)
+        def_rel        = (def_avg_pts - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
+        def_suffix     = "▲ Surplus" if def_rel >= 5 else ("▼ Need" if def_rel <= -5 else "~ Average")
+
+        d1, d2, d3 = st.columns(3)
+        d1.metric(
+            label=f"DEF Avg Pts  ({def_suffix})",
+            value=f"{def_avg_pts:.1f}",
+            delta=f"{def_rel:+.1f}% vs league avg ({league_def_avg:.1f})",
+            delta_color="normal",
+        )
+        d2.metric("IDP/DEF Players on Roster", def_count)
+        d3.metric("League DEF Avg Pts", f"{league_def_avg:.1f}")
+
+        # League-wide DEF ranking table
+        with st.expander("Full league DEF ranking", expanded=False):
+            def_rows = []
+            for r2id, de in def_analysis.items():
+                r2_rel = (de["avg_pts"] - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
+                def_rows.append({
+                    "Team":       de["name"],
+                    "Avg Pts":    round(de["avg_pts"], 1),
+                    "Players":    de["player_count"],
+                    "vs League":  f"{r2_rel:+.1f}%",
+                })
+            def_rows.sort(key=lambda r: r["Avg Pts"], reverse=True)
+            for i, row in enumerate(def_rows):
+                row["Rank"] = i + 1
+            df_def_rank = pd.DataFrame(def_rows)[["Rank", "Team", "Avg Pts", "Players", "vs League"]]
+            st.dataframe(df_def_rank, width="stretch", hide_index=True,
+                         column_config={"Avg Pts": COL_CFG["Avg Pts"]})
+
+        # Individual DEF players for selected team
+        def_players = team_def_entry.get("players", [])
+        if def_players:
+            with st.expander(f"{sel_ta_team} — individual DEF/IDP players", expanded=False):
+                st.dataframe(
+                    pd.DataFrame([{
+                        "Player": p["name"], "Pos": p["pos"],
+                        f"{STATS_SEASON} Pts": round(p["pts"], 1),
+                    } for p in def_players]),
+                    width="stretch", hide_index=True,
+                    column_config={f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"]},
+                )
+
+        st.divider()
+
+        # ── Section C: Manual Trade Analyzer ─────────────────────────────────────
+        st.subheader("C · Manual Trade Analyzer")
+        st.caption("Pick any player or pick from this team's roster, choose your target position, and see closest-value options across the league.")
+
+        # Build asset options: all players with FC values + all valued picks
+        # (Untouchable players stay selectable here — this is manual exploration —
+        #  but get a 🔒 marker so the intent is visible.)
+        asset_options = []
+        for pos in SKILL_POSITIONS:
+            for player in td["pos_players"][pos]:
+                _lock = "🔒 " if player["name"] in _untouchable else ""
+                asset_options.append({
+                    "label":     f"{_lock}{player['name']}  ({pos})  —  {player['value']:,}",
+                    "value":     player["value"],
+                    "type":      "player",
+                    "pos":       pos,
+                    "name":      player["name"],
+                })
+        for pick in td["picks"]:
+            asset_options.append({
+                "label":  f"{pick['label']}  —  {pick['value']:,}",
+                "value":  pick["value"],
+                "type":   "pick",
+                "pos":    "PICK",
+                "name":   pick["label"],
+            })
+
+        if not asset_options:
+            st.info("No FC-valued assets found for this team.")
+        else:
+            col_a, col_b = st.columns([3, 1])
+            sel_asset_label = col_a.selectbox(
+                "Asset to trade away (player or pick)",
+                options=[a["label"] for a in asset_options],
+                key="man_asset",
+            )
+            # Default Target to the team's priority need; if that equals the default
+            # asset's position, fall back to the next-biggest need (never QB-for-QB).
+            _needs_ranked = [p for p, _ in sorted(td.get("need_scores", {}).items(),
+                                                  key=lambda x: x[1], reverse=True)]
+            _default_asset_pos = asset_options[0]["pos"] if asset_options else None
+            _target_default = next((p for p in _needs_ranked if p != _default_asset_pos), None)
+            _target_idx = SKILL_POSITIONS.index(_target_default) if _target_default in SKILL_POSITIONS else 0
+            sel_target_pos = col_b.selectbox(
+                "Target position",
+                options=SKILL_POSITIONS,
+                index=_target_idx,
+                key="man_target_pos",
+            )
+
+            # Find the selected asset
+            sel_asset = next((a for a in asset_options if a["label"] == sel_asset_label), None)
+
+            if sel_asset:
+                asset_val = sel_asset["value"]
+                # Find all players in target position on OTHER teams
+                pool = [
+                    p for p in all_players_by_pos[sel_target_pos]
+                    if p["on_team_rid"] != rid
+                ]
+                pool.sort(key=lambda p: abs(p["value"] - asset_val))
+
+                if not pool:
+                    st.info(f"No {sel_target_pos}s with FC values found on other rosters.")
+                else:
+                    st.markdown(
+                        f"Trading **{sel_asset['name']}** ({val_col}: **{asset_val:,}**) — "
+                        f"closest-value **{sel_target_pos}s** on other rosters:"
+                    )
+                    def _man_pos_status(target_rid, pos):
+                        owner_td = team_data.get(target_rid, {})
+                        ns = owner_td.get("need_scores",    {}).get(pos)
+                        ss = owner_td.get("surplus_scores", {}).get(pos)
+                        if ns is None or ss is None:
+                            return "—"
+                        if ss > ns and ss >= 20:  return "🟢 Surplus"
+                        if ns > ss and ns >= 20:  return "🔴 Deficit"
+                        return "🟡 Average"
+
+                    # Score each candidate: fit (mutual benefit) first, then closest value
+                    scored_pool = []
+                    for p in pool:
+                        diff      = p["value"] - asset_val
+                        supply    = _man_pos_status(p["on_team_rid"], sel_target_pos)
+                        asset_need = _man_pos_status(p["on_team_rid"], sel_asset["pos"])
+                        fit = (2 if "Surplus" in supply   else 0) + \
+                              (2 if "Deficit" in asset_need else 0)
+                        scored_pool.append((p, diff, supply, asset_need, fit))
+                    scored_pool.sort(key=lambda x: (-x[4], abs(x[1])))
+
+                    rows = []
+                    for p, diff, supply, asset_need, _ in scored_pool[:10]:
+                        rows.append({
+                            "Player":              p["name"],
+                            "Currently On":        p["on_team"],
+                            val_col:               p["value"],
+                            "Value Diff":          f"{diff:+,}",
+                            "Their Target Supply": supply,
+                            "Need for Your Asset": asset_need,
+                        })
+                    st.dataframe(
+                        pd.DataFrame(rows),
+                        width="stretch", hide_index=True,
+                        key="man_results",
+                        column_config={val_col: COL_CFG["Value"]},
+                    )
+
+        st.divider()
+
+        # ── Section D: Trade Calculator ──────────────────────────────────────────
+        st.subheader("D · Trade Calculator")
+        st.caption(
+            f"Weighed on **{value_source}** values — FantasyCalc already reflects your league's "
+            "Superflex / PPR / team-count scoring. Pick the two teams, add players & picks, "
+            "and the fairness read updates live."
+        )
+
+        # Per-team asset universe (normalised to 0–10K), so each side filters to its team
+        _team_assets = {}
+        for _r2, _t2 in team_data.items():
+            _d = {}
+            for _p2 in SKILL_POSITIONS:
+                for _pl in _t2["pos_players"].get(_p2, []):
+                    _v = _pl["value"] or 0
+                    if _v:
+                        _d[f"{_pl['name']}  ({_p2}) — {_v:,}"] = _v
+            for _pk in _t2.get("picks", []):
+                _v = round((_pk["value"] or 0) / 10282 * 10000)
+                if _v:
+                    _d[f"{_pk['label']}  (Pick) — {_v:,}"] = _v
+            _team_assets[_t2["name"]] = _d
+
+        _all_teams = sorted(_team_assets.keys())
+        _a_default = my_team if my_team in _all_teams else _all_teams[0]
+        _b_default = next((t for t in _all_teams if t != _a_default), _all_teams[0])
+
+        _cc1, _cc2 = st.columns(2)
+        with _cc1:
+            st.markdown("<span style='color:#2196F3; font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
+            _team_a = st.selectbox("Team A", _all_teams, index=_all_teams.index(_a_default),
+                                   key="calc_team_a", label_visibility="collapsed")
+            # Key includes the team so switching teams never carries stale options
+            _side_a = st.multiselect("Players & picks", sorted(_team_assets[_team_a].keys()),
+                                     key=f"calc_side_a_{_team_a}", placeholder=f"Add from {_team_a}…",
+                                     label_visibility="collapsed")
+        with _cc2:
+            st.markdown("<span style='color:#ff5a5f; font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
+            _team_b = st.selectbox("Team B", _all_teams, index=_all_teams.index(_b_default),
+                                   key="calc_team_b", label_visibility="collapsed")
+            _side_b = st.multiselect("Players & picks", sorted(_team_assets[_team_b].keys()),
+                                     key=f"calc_side_b_{_team_b}", placeholder=f"Add from {_team_b}…",
+                                     label_visibility="collapsed")
+
+        _tot_a = sum(_team_assets[_team_a].get(x, 0) for x in _side_a)
+        _tot_b = sum(_team_assets[_team_b].get(x, 0) for x in _side_b)
+
+        if not _side_a or not _side_b:
+            st.info("Add at least one asset to **each** side to weigh the trade.")
+        else:
+            _gap     = _tot_b - _tot_a
+            _bigger  = max(_tot_a, _tot_b) or 1
+            _gap_pct = abs(_gap) / _bigger * 100
+            _sum     = (_tot_a + _tot_b) or 1
+            _pa      = round(_tot_a / _sum * 100)
+            if _gap_pct <= 5:
+                _badge_bg, _badge_tx = "#0c2e1a", "#7ee2a8"
+                _verdict = f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
+            else:
+                _badge_bg, _badge_tx = "#3a2e0c", "#f5d27a"
+                _winner = _team_b if _gap > 0 else _team_a
+                _verdict = f"↘ Favours {_winner} by {abs(_gap):,} ({_gap_pct:.0f}%)"
+            st.markdown(
+                f"""<div style="border:1px solid #2d3140; border-radius:12px; padding:16px 18px; margin-top:4px;">
+                  <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
+                    <div><div style="font-size:0.72rem; color:#7ab4f0; text-transform:uppercase; letter-spacing:.06em;">{_team_a}</div>
+                         <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_a:,}</div></div>
+                    <div style="text-align:center; align-self:center;">
+                         <span style="background:{_badge_bg}; color:{_badge_tx}; padding:5px 12px; border-radius:14px; font-size:0.82rem; font-weight:600;">{_verdict}</span></div>
+                    <div style="text-align:right;"><div style="font-size:0.72rem; color:#f0a0a3; text-transform:uppercase; letter-spacing:.06em;">{_team_b}</div>
+                         <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_b:,}</div></div>
+                  </div>
+                  <div style="display:flex; height:20px; border-radius:6px; overflow:hidden; font-size:0.74rem; font-weight:600;">
+                    <div style="width:{_pa}%; background:#2196F3; color:#fff; display:flex; align-items:center; justify-content:center;">{_pa}%</div>
+                    <div style="width:{100 - _pa}%; background:#ff5a5f; color:#fff; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
+                  </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+    # ── Page: Draft Room ─────────────────────────────────────────────────────────
+    _frag_trade_analyzer()
 elif page == "🏟️ Draft Room":
     curr_year = str(datetime.now().year)
 
@@ -3516,7 +3643,7 @@ elif page == "🏟️ Draft Room":
 
     edited = st.data_editor(
         _board_data,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key="draft_board_editor",
         column_config={
@@ -3533,7 +3660,7 @@ elif page == "🏟️ Draft Room":
     )
 
     btn_c1, btn_c2, _ = st.columns([1, 1, 4])
-    if btn_c1.button("🔄 Update Estimates", key="dr_update", use_container_width=True):
+    if btn_c1.button("🔄 Update Estimates", key="dr_update", width="stretch"):
         new_confirmed = {}
         for _, row in edited.iterrows():
             if row.get("Pick Made") and row.get("Rookie Selected"):
@@ -3542,7 +3669,7 @@ elif page == "🏟️ Draft Room":
         save_draft_selections(league_id, new_confirmed)
         st.rerun()
 
-    if btn_c2.button("🗑️ Clear All", key="dr_clear", use_container_width=True):
+    if btn_c2.button("🗑️ Clear All", key="dr_clear", width="stretch"):
         st.session_state.draft_confirmed = {}
         clear_draft_selections(league_id)
         st.rerun()
