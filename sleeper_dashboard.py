@@ -1434,6 +1434,8 @@ with st.sidebar:
             if st.button("Sign out", use_container_width=True, key="auth_signout"):
                 for _k in ("auth_email", "_auth_code_sent", "_auth_pending_email"):
                     st.session_state.pop(_k, None)
+                st.session_state.league_id = None              # back to the entry screen
+                st.session_state.nav_page   = "🏠 League Overview"  # land on Overview next time
                 st.rerun()
         else:
             with st.expander("🔑 Sign in to save", expanded=False):
