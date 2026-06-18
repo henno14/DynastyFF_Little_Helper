@@ -51,102 +51,44 @@ st.markdown("""
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def _draft_selections_file(league_id):
-    return os.path.join(_APP_DIR, f"draft_selections_{league_id}.json")
-
-_LEGACY_DRAFT_FILE = os.path.join(_APP_DIR, "draft_selections.json")
-
+# ── Persistence — all settings route through _store_get/_store_set (below):
+#   Supabase per-user when signed in, session-state when a guest.
+#   Keys: favorites · league_prefs:<id> · tags:<id> · draft:<id> · last_league
 def load_draft_selections(league_id):
-    """Load saved pick confirmations for a league. Returns {pick_label: rookie_name}."""
-    path = _draft_selections_file(league_id)
-    if not os.path.exists(path) and league_id == LEAGUE_ID and os.path.exists(_LEGACY_DRAFT_FILE):
-        path = _LEGACY_DRAFT_FILE   # pre-multi-league file belongs to the original league
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[WARNING] Could not load draft selections from {path}: {e}")
-    return {}
+    return _store_get(f"draft:{league_id}", {})
 
 def save_draft_selections(league_id, selections):
-    """Persist {pick_label: rookie_name} for a league."""
-    with open(_draft_selections_file(league_id), "w") as f:
-        json.dump(selections, f, indent=2)
+    _store_set(f"draft:{league_id}", selections)
 
 def clear_draft_selections(league_id):
-    for path in (_draft_selections_file(league_id),
-                 _LEGACY_DRAFT_FILE if league_id == LEAGUE_ID else None):
-        if path and os.path.exists(path):
-            os.remove(path)
-
-MY_TEAM_FILE = os.path.join(_APP_DIR, "my_team.json")
-
-def _read_prefs_file():
-    """Read the raw prefs file, migrating the legacy flat format
-    ({'team','value_source'} at top level) into a per-league structure."""
-    prefs = {}
-    if os.path.exists(MY_TEAM_FILE):
-        try:
-            with open(MY_TEAM_FILE) as f:
-                prefs = json.load(f) or {}
-        except Exception as e:
-            print(f"[WARNING] Could not load prefs from {MY_TEAM_FILE}: {e}")
-    if "team" in prefs or "value_source" in prefs:   # legacy flat format → original league
-        legacy = {k: prefs.pop(k) for k in ("team", "value_source") if k in prefs}
-        lp = prefs.setdefault("leagues", {}).setdefault(LEAGUE_ID, {})
-        for k, v in legacy.items():
-            lp.setdefault(k, v)
-    return prefs
-
-def _write_prefs_file(prefs):
-    if prefs:
-        with open(MY_TEAM_FILE, "w") as f:
-            json.dump(prefs, f, indent=2)
-    elif os.path.exists(MY_TEAM_FILE):
-        os.remove(MY_TEAM_FILE)
+    _store_set(f"draft:{league_id}", {})
 
 def load_league_prefs(league_id):
     """Per-league preferences ({'team': ..., 'value_source': ...})."""
-    return _read_prefs_file().get("leagues", {}).get(league_id, {})
+    return _store_get(f"league_prefs:{league_id}", {})
 
 def save_league_prefs(league_id, **updates):
     """Merge updates into one league's preferences. None values are removed."""
-    prefs = _read_prefs_file()
-    lp = prefs.setdefault("leagues", {}).setdefault(league_id, {})
+    lp = dict(load_league_prefs(league_id))
     for k, v in updates.items():
         if v is None:
             lp.pop(k, None)
         else:
             lp[k] = v
-    if not lp:
-        prefs["leagues"].pop(league_id, None)
-    _write_prefs_file(prefs)
+    _store_set(f"league_prefs:{league_id}", lp)
 
 def save_last_league(league_id):
-    prefs = _read_prefs_file()
-    prefs["last_league_id"] = league_id
-    _write_prefs_file(prefs)
+    _store_set("last_league", league_id)
 
-FAVORITES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favorites.json")
+def load_last_league():
+    return _store_get("last_league", None)
 
 def load_favorites():
-    """Load persisted favourite player names. Returns a set."""
-    if os.path.exists(FAVORITES_FILE):
-        try:
-            with open(FAVORITES_FILE) as f:
-                return set(json.load(f))
-        except Exception as e:
-            print(f"[WARNING] Could not load favorites from {FAVORITES_FILE}: {e}")
-    return set()
+    """Favourite player names (set)."""
+    return set(_store_get("favorites", []))
 
 def save_favorites(favs):
-    """Persist favourite player names (or remove the file when empty)."""
-    if favs:
-        with open(FAVORITES_FILE, "w") as f:
-            json.dump(sorted(favs), f, indent=2)
-    elif os.path.exists(FAVORITES_FILE):
-        os.remove(FAVORITES_FILE)
+    _store_set("favorites", sorted(favs))
 
 # ── Player status tags (Untouchable / Keep / Trade / Cut) — per league ────────
 TAG_OPTIONS = ["", "Untouchable", "Keep", "Trade", "Cut"]
@@ -157,28 +99,11 @@ TAG_DISPLAY = {
     "Cut":         "✂️ Cut",
 }
 
-def _player_tags_file(league_id):
-    return os.path.join(_APP_DIR, f"player_tags_{league_id}.json")
-
 def load_player_tags(league_id):
-    """Load {player_name: status} for a league."""
-    path = _player_tags_file(league_id)
-    if os.path.exists(path):
-        try:
-            with open(path) as f:
-                return json.load(f) or {}
-        except Exception as e:
-            print(f"[WARNING] Could not load player tags from {path}: {e}")
-    return {}
+    return _store_get(f"tags:{league_id}", {})
 
 def save_player_tags(league_id, tags):
-    """Persist {player_name: status} for a league (drop the file when empty)."""
-    path = _player_tags_file(league_id)
-    if tags:
-        with open(path, "w") as f:
-            json.dump(tags, f, indent=2)
-    elif os.path.exists(path):
-        os.remove(path)
+    _store_set(f"tags:{league_id}", tags)
 
 def plural(n, singular, plural_form=None):
     """'1 player', '2 players', '1 story' — count + correctly-pluralised noun."""
@@ -227,6 +152,46 @@ def auth_verify_code(email, code):
     except Exception as e:
         print(f"[WARN] verify_otp failed: {e}")
     return None
+
+# ── Per-user store: Supabase when signed in, session-state when a guest ───────
+@st.cache_resource(show_spinner=False)
+def _sb_db_client():
+    """DB client using the secret key (bypasses RLS). None if not configured."""
+    try:
+        from supabase import create_client
+        return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    except Exception as e:
+        print(f"[INFO] Supabase DB not configured ({e}).")
+        return None
+
+def _signed_in():
+    return bool(st.session_state.get("auth_email")) and _sb_db_client() is not None
+
+def _store_get(key, default):
+    """Read a settings blob: Supabase (signed in) else session-state (guest)."""
+    if _signed_in():
+        try:
+            res = (_sb_db_client().table("user_settings").select("data")
+                   .eq("email", st.session_state.auth_email).eq("key", key)
+                   .limit(1).execute())
+            return res.data[0]["data"] if res.data else default
+        except Exception as e:
+            print(f"[WARN] store_get {key}: {e}")
+            return default
+    return st.session_state.get(f"_guest_{key}", default)
+
+def _store_set(key, value):
+    """Write a settings blob: Supabase (signed in) else session-state (guest)."""
+    if _signed_in():
+        try:
+            (_sb_db_client().table("user_settings")
+             .upsert({"email": st.session_state.auth_email, "key": key, "data": value},
+                     on_conflict="email,key").execute())
+            return
+        except Exception as e:
+            print(f"[WARN] store_set {key}: {e}")
+            return
+    st.session_state[f"_guest_{key}"] = value
 
 def dash_na(df):
     """Display copy where object-column None/NaN render as '—' instead of the
@@ -1353,8 +1318,8 @@ def normalize_dim(values_dict):
 
 # ── League selection gate (multi-league) ─────────────────────────────────────
 if "league_id" not in st.session_state:
-    # Bootstrap: last-used league from prefs, falling back to the built-in default
-    st.session_state.league_id = _read_prefs_file().get("last_league_id") or LEAGUE_ID or None
+    # Bootstrap: last-used league (guest session / signed-in store), else built-in default
+    st.session_state.league_id = load_last_league() or LEAGUE_ID or None
 
 if not st.session_state.get("league_id"):
     st.title("🏈 Dynasty FF Lil' Helper")
@@ -1411,13 +1376,23 @@ st.session_state._data_warmed_for = league_id
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
 st.session_state.setdefault("app_theme", "System Default")
-if "favorites" not in st.session_state:
+
+# Re-hydrate per-user data whenever IDENTITY changes (sign in / out) — favourites
+# are global, tags per league. The signed-in store is Supabase; guest is session.
+_identity = st.session_state.get("auth_email") or "guest"
+if st.session_state.get("_loaded_identity") != _identity:
+    st.session_state._loaded_identity = _identity
     st.session_state.favorites = load_favorites()
-# Player status tags are per league — reseed when the league changes
+    st.session_state.player_tags = load_player_tags(league_id)
+    st.session_state._player_tags_league = league_id
+    st.session_state._auto_cut_done = set()
+    st.session_state.pop("_prefs_seeded_for", None)   # re-seed My Team / value source from store
+
+# Reseed tags when the league changes within the same identity
 if st.session_state.get("_player_tags_league") != league_id:
     st.session_state.player_tags = load_player_tags(league_id)
     st.session_state._player_tags_league = league_id
-    st.session_state._auto_cut_done = set()   # reset auto-Cut tracker per league
+    st.session_state._auto_cut_done = set()
 
 # ── Sidebar: identity + value source (rendered early — value_source drives the
 #    data pipeline below; team names derive straight from rosters/users) ───────
@@ -2400,7 +2375,10 @@ elif page == "🌟 2026 Rookies":
 # ── Page: Settings (includes Scoring Rules section) ──────────────────────────
 elif page == "⚙️ Settings":
     st.title("Settings")
-    st.caption("Your team, value source, favourites and tags are kept for this session. (Cross-device sign-in is coming soon.)")
+    if _signed_in():
+        st.caption(f"✅ Signed in as **{st.session_state.auth_email}** — your team, value source, favourites and tags are saved to your account.")
+    else:
+        st.caption("Browsing as a guest — settings last for this session. **Sign in** (sidebar) to save them to your account.")
 
     # ── Data & League controls (moved off the sidebar) ───────────────────────
     st.subheader("Data & League")
