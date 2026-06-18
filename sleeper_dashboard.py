@@ -451,13 +451,18 @@ DP_CACHE    = "dp_cache.json"
 DP_CW_CACHE = "dp_crosswalk_cache.json"
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_dp_values():
+def fetch_dp_values(num_qbs=2):
     """Fetch DynastyProcess values.csv (weekly) and player-ID crosswalk.
+    Format-aware: DP's CSV carries both 1QB and SuperFlex columns, so single-QB
+    leagues (num_qbs < 2) read value_1qb/ecr_1qb instead of the 2QB columns.
     Returns (dp_map, cw_ktc_to_sid):
       dp_map        : {sleeper_id: {value, rank, ecr}}
       cw_ktc_to_sid : {ktc_id_str: sleeper_id_str}
     """
     import csv as _csv, io as _io, json as _json
+    _val_col = "value_1qb" if num_qbs < 2 else "value_2qb"
+    _ecr_col = "ecr_1qb"   if num_qbs < 2 else "ecr_2qb"
+    _dp_cache = DP_CACHE.replace(".json", f"_{1 if num_qbs < 2 else 2}qb.json")
 
     CW_URL  = "https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_playerids.csv"
     VAL_URL = "https://raw.githubusercontent.com/dynastyprocess/data/master/files/values.csv"
@@ -491,13 +496,13 @@ def fetch_dp_values():
         val_resp = requests.get(VAL_URL, timeout=20)
         val_resp.raise_for_status()
         rows = list(_csv.DictReader(_io.StringIO(val_resp.text)))
-        raw_vals = [float(r.get("value_2qb") or 0) for r in rows]
+        raw_vals = [float(r.get(_val_col) or 0) for r in rows]
         max_val  = max(raw_vals) if raw_vals else 1
-        ranked   = sorted(rows, key=lambda r: float(r.get("value_2qb") or 0), reverse=True)
+        ranked   = sorted(rows, key=lambda r: float(r.get(_val_col) or 0), reverse=True)
         for rank_i, row in enumerate(ranked, 1):
             fp_id = str(row.get("fp_id") or "").strip()
-            raw   = row.get("value_2qb")
-            ecr   = row.get("ecr_2qb")
+            raw   = row.get(_val_col)
+            ecr   = row.get(_ecr_col)
             sid   = cw_fp_to_sid.get(fp_id)
             if not sid or not raw:
                 continue
@@ -509,14 +514,14 @@ def fetch_dp_values():
                 }
             except (ValueError, TypeError):
                 continue
-        with open(DP_CACHE, "w") as f:
+        with open(_dp_cache, "w") as f:
             _json.dump(dp_map, f)
     except Exception as e:
         print(f"[WARNING] DP values fetch failed: {e}")
-        if os.path.exists(DP_CACHE):
-            age_h = (datetime.now().timestamp() - os.path.getmtime(DP_CACHE)) / 3600
+        if os.path.exists(_dp_cache):
+            age_h = (datetime.now().timestamp() - os.path.getmtime(_dp_cache)) / 3600
             if age_h < 168:
-                with open(DP_CACHE) as f:
+                with open(_dp_cache) as f:
                     dp_map = _json.load(f)
 
     return dp_map, cw_ktc_to_sid
@@ -628,6 +633,19 @@ def value_col_label(source):
         "DP Values":     "DP Value",
         "Consensus Avg": "Cons. Avg",
     }.get(source, "Value")
+
+
+ALL_VALUE_SOURCES = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+
+def available_value_sources(num_qbs):
+    """Value sources valid for this league's QB format. KeepTradeCut and
+    DynastyNerds are SuperFlex-only scrapes (~1.9x QB inflation in 1-QB leagues),
+    so they're hidden for single-QB leagues; FantasyCalc and DynastyProcess both
+    adapt to the format and stay. Consensus Avg then blends only what's left
+    (its math averages the populated maps, and KTC/DN are emptied in 1-QB)."""
+    if num_qbs is not None and num_qbs < 2:
+        return ["FC Dynasty", "DP Values", "Consensus Avg"]
+    return list(ALL_VALUE_SOURCES)
 
 
 POSITION_COLORS = {
@@ -1565,10 +1583,17 @@ with _load_spin:
             st.session_state.league_id = None
             st.rerun()
         st.stop()
+    num_qbs      = derive_league_shape(league)[0]        # 1 = single-QB, 2 = superflex/2QB
     dn_map       = fetch_dn_values()
     ktc_by_id    = fetch_ktc_values()
-    dp_map, cw_ktc = fetch_dp_values()
+    dp_map, cw_ktc = fetch_dp_values(num_qbs)            # DP reads its 1QB column when 1-QB
     ktc_map      = build_ktc_sleeper_map(ktc_by_id, cw_ktc, players)
+    # Single-QB leagues: KTC & DynastyNerds are SuperFlex-only (~1.9x QB inflation),
+    # so drop them entirely — they're hidden as options AND, because the maps are
+    # empty, excluded from Consensus Avg automatically. FC + DP both adapt to 1-QB.
+    if num_qbs < 2:
+        dn_map = {}
+        ktc_map = {}
     val_maps     = {"dn": dn_map, "ktc": ktc_map, "dp": dp_map}
 st.session_state._data_warmed_for = league_id
 
@@ -1594,7 +1619,7 @@ if st.session_state.get("_onboarded_for") != league_id:
             with st.form("setup_form", border=False):
                 _setup_team = st.selectbox("Which team is yours?", ["—"] + _teams0, key="setup_team")
                 _setup_vs = st.selectbox(
-                    "Value source", ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"],
+                    "Value source", available_value_sources(num_qbs),
                     key="setup_vs",
                 )
                 st.caption(
@@ -1602,6 +1627,9 @@ if st.session_state.get("_onboarded_for") != league_id:
                     "across the app — FantasyCalc, DynastyNerds, KeepTradeCut, DynastyProcess, or a "
                     "consensus average of them. You can switch it anytime from the sidebar."
                 )
+                if num_qbs < 2:
+                    st.caption("ℹ️ This is a **1-QB league** — KeepTradeCut & DynastyNerds are "
+                               "SuperFlex-only, so they're hidden to avoid inflated QB values.")
                 _setup_go = st.form_submit_button("Continue →", type="primary")
             if _setup_go:
                 save_league_prefs(league_id, value_source=_setup_vs,
@@ -1721,7 +1749,7 @@ with st.sidebar:
         _saved_team = _prefs.get("team")
         st.session_state.my_team_pick = _saved_team if _saved_team in _team_opts else "—"
         _saved_vs = _prefs.get("value_source")
-        _vs_opts_boot = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+        _vs_opts_boot = available_value_sources(num_qbs)
         st.session_state.value_source = _saved_vs if _saved_vs in _vs_opts_boot else "FC Dynasty"
         # New league context → page-level sticky team choices no longer apply
         for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
@@ -1738,9 +1766,15 @@ with st.sidebar:
             st.session_state.pop(_sk, None)
         st.session_state._last_my_team = my_team
 
-    # Value source — drives every Value/Rank column; persisted per league
-    _vs_options_sb = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+    # Value source — drives every Value/Rank column; persisted per league.
+    # List is format-filtered (KTC/DN hidden for 1-QB); coerce any stale saved
+    # value into the allowed set so the selectbox can't raise.
+    _vs_options_sb = available_value_sources(num_qbs)
+    if st.session_state.get("value_source") not in _vs_options_sb:
+        st.session_state.value_source = "FC Dynasty"
     st.selectbox("Value Source", _vs_options_sb, key="value_source")
+    if num_qbs < 2:
+        st.caption("ℹ️ KTC & DynastyNerds are SuperFlex-only — hidden for your 1-QB league.")
     if st.session_state.get("_last_value_source") != st.session_state.value_source:
         save_league_prefs(league_id, value_source=st.session_state.value_source)
         st.session_state._last_value_source = st.session_state.value_source
