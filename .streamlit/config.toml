@@ -1,0 +1,30 @@
+# Dynasty FF Lil' Helper — brand theme
+# Palette derived from the logo: field-green + gold crest, coral robot accent.
+# Coral is the action color, gold the highlight; dark base for the beta.
+# NOTE: dark-only for now. A light theme is tracked on the roadmap (Kanban) —
+# the CSS in sleeper_dashboard.py is tokenised so light becomes a flip, not a
+# rewrite, once the Power Rankings table + Plotly charts are tokenised too.
+
+[theme]
+base = "dark"
+primaryColor = "#ff5a5f"              # coral — buttons, selected widgets, focus
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#171c26"  # cards / inputs / surfaces
+textColor = "#fafafa"
+linkColor = "#ff7a7e"
+baseRadius = "0.7rem"
+borderColor = "#262d3a"
+showWidgetBorder = true
+font = "Inter, ui-sans-serif, system-ui, -apple-system, sans-serif"
+headingFont = "Space Grotesk, Inter, sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#12161f"
+secondaryBackgroundColor = "#1b212c"
+borderColor = "#222a37"
+
+[client]
+toolbarMode = "minimal"               # belt-and-suspenders chrome reduction
+
+[browser]
+gatherUsageStats = false
