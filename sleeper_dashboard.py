@@ -1350,6 +1350,10 @@ if not st.session_state.get("league_id"):
         "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
         "in one, plus trade analysis, draft tools, and a free-agent advisor."
     )
+    # Signed in but no saved league yet (first sign-in) → guide them to pick one
+    if st.session_state.get("auth_email"):
+        st.success(f"✅ Signed in as **{st.session_state.auth_email}** — pick your league below "
+                   "to get started (your settings will save automatically from now on).")
     _tab_find, _tab_signin = st.tabs(["🔎 Find my league", "🔑 Sign in"])
 
     with _tab_signin:
