@@ -60,18 +60,68 @@ st.set_page_config(
 # The bulk of theming lives in .streamlit/config.toml; the CSS below adds the
 # modern type, chrome-hiding, and card/sidebar polish config.toml can't express.
 
-st.markdown("""
-<style>
-/* ── Modern type (loaded from Google Fonts; config.toml names them too) ─────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
+# ── Design tokens — single source of truth (Python side). Mirrors the CSS
+#    :root block in inject_theme() and .streamlit/config.toml. Charts/components
+#    reference colors by name here instead of hardcoding hex. ─────────────────
+TOKENS = {
+    # Surfaces
+    "bg_page": "#0A0F0C", "bg_surface": "#111814", "bg_raised": "#161E19",
+    "bg_inset": "#0E1512", "bg_hover": "#1C2620",
+    # Borders
+    "border": "#232E27", "border_strong": "#2C3A31", "divider": "#1A231D",
+    # Text
+    "text_hi": "#F2F5F3", "text_body": "#C7D1CB", "text_mid": "#9AA8A0",
+    "text_low": "#7E8C84", "text_faint": "#5E6B64",
+    # Accents — ONE system (green=primary/positive, gold=premium/CTA,
+    # red=danger, blue=picks/info, purple=future)
+    "green": "#2FA866", "green_bright": "#34D17E", "gold": "#E6B422",
+    "red": "#E5484D", "blue": "#38BDF8", "purple": "#A78BFA",
+    # Pill fills (dark tint) + text
+    "pill_green_bg": "#10301F", "pill_green_fg": "#34D17E",
+    "pill_gold_bg": "#2E2A0E", "pill_gold_fg": "#E6B422",
+    "pill_red_bg": "#331517", "pill_red_fg": "#F2787C",
+    "pill_blue_bg": "#0E2A38", "pill_blue_fg": "#7FD3F7",
+    "pill_purple_bg": "#231A3A", "pill_purple_fg": "#C4B5FD",
+    # Highlighted "your team" row
+    "row_you_bg": "#0E1F16", "row_you_border": "#1C4B30",
+    # Text on colored buttons
+    "on_green": "#04210F", "on_gold": "#2A1E02",
+}
 
-/* Brand tokens — single source of truth. Light values live alongside as a
-   future flip (see config.toml note); dark is forced for the beta. */
+
+def inject_theme():
+    """Inject Google fonts, the design-token :root block, and the reusable
+    helper classes (.eyebrow / .dlh-card / .pill.*) once at startup. This is
+    the single source of truth for the dark "astroturf" look; keep it in sync
+    with .streamlit/config.toml and the Python TOKENS dict above."""
+    st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── Design tokens — single source of truth (CSS side) ──────────────────────── */
 :root{
-  --brand-coral:#ff5a5f; --brand-coral-hi:#ff7a7e; --brand-coral-deep:#e23d42;
-  --brand-gold:#e6b422;  --brand-gold-hi:#f2c94c;  --brand-green:#157a3d;
-  --surface:#171c26; --surface-2:#1b212c; --border:#262d3a;
-  --text:#fafafa; --muted:#9aa4b2;
+  /* Surfaces */
+  --bg-page:#0A0F0C; --bg-surface:#111814; --bg-raised:#161E19;
+  --bg-inset:#0E1512; --bg-hover:#1C2620;
+  /* Borders */
+  --border:#232E27; --border-strong:#2C3A31; --divider:#1A231D;
+  /* Text */
+  --text-hi:#F2F5F3; --text-body:#C7D1CB; --text-mid:#9AA8A0;
+  --text-low:#7E8C84; --text-faint:#5E6B64;
+  /* Accents — ONE system */
+  --green:#2FA866; --green-bright:#34D17E; --gold:#E6B422;
+  --red:#E5484D; --blue:#38BDF8; --purple:#A78BFA;
+  /* Pill fills + text */
+  --pill-green-bg:#10301F; --pill-green-fg:#34D17E;
+  --pill-gold-bg:#2E2A0E; --pill-gold-fg:#E6B422;
+  --pill-red-bg:#331517; --pill-red-fg:#F2787C;
+  --pill-blue-bg:#0E2A38; --pill-blue-fg:#7FD3F7;
+  --pill-purple-bg:#231A3A; --pill-purple-fg:#C4B5FD;
+  /* Highlighted "your team" row */
+  --row-you-bg:#0E1F16; --row-you-border:#1C4B30;
+  /* Text on colored buttons */
+  --on-green:#04210F; --on-gold:#2A1E02;
+  /* Radius */
+  --r-card:14px; --r-row:10px; --r-btn:10px; --r-chip:8px;
 }
 
 html, body, .stApp, [class*="css"]{
@@ -101,41 +151,42 @@ h1{ font-weight:700; } h2,h3{ font-weight:600; }
 .block-container{ padding-top:2.2rem; padding-bottom:3rem; max-width:1500px; }
 h1{ margin-bottom:.1em; }
 
-/* ── Metric cards — branded: gradient surface + coral→gold accent rail ──────── */
+/* ── Metric cards — token surface + green→gold accent rail ──────────────────── */
 [data-testid="stMetric"]{
   position:relative; overflow:hidden;
-  background:linear-gradient(180deg,#1a2130 0%, #141a25 100%);
-  border:1px solid #2a3344; border-radius:16px;
+  background:var(--bg-surface);
+  border:1px solid var(--border); border-radius:var(--r-card);
   padding:15px 18px 13px 21px; box-shadow:0 2px 10px rgba(0,0,0,.28);
   transition:border-color .15s ease, transform .1s ease;
 }
 [data-testid="stMetric"]::after{
   content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
-  background:linear-gradient(180deg,var(--brand-coral),var(--brand-gold));
+  background:linear-gradient(180deg,var(--green),var(--gold));
 }
-[data-testid="stMetric"]:hover{ border-color:#3a4658; transform:translateY(-1px); }
+[data-testid="stMetric"]:hover{ border-color:var(--border-strong); transform:translateY(-1px); }
 [data-testid="stMetricLabel"]{
-  color:var(--muted) !important; font-weight:600;
-  text-transform:uppercase; letter-spacing:.05em; font-size:.72rem;
+  color:var(--text-low) !important; font-weight:600;
+  text-transform:uppercase; letter-spacing:.08em; font-size:.72rem;
 }
-[data-testid="stMetricValue"]{ color:var(--text) !important; font-weight:600; }
+[data-testid="stMetricValue"]{ color:var(--text-hi) !important; font-weight:600; }
 
-/* ── Buttons ────────────────────────────────────────────────────────────────── */
+/* ── Buttons — primary is green, not coral ──────────────────────────────────── */
 .stButton>button, .stDownloadButton>button{
-  border-radius:10px; font-weight:600;
+  border-radius:var(--r-btn); font-weight:600;
   transition:transform .04s ease, box-shadow .15s ease, border-color .15s ease;
 }
-.stButton>button:hover{ border-color:var(--brand-coral); }
+.stButton>button:hover{ border-color:var(--green); }
 .stButton>button:active{ transform:translateY(1px); }
-button[kind="primary"]{ box-shadow:0 2px 8px rgba(255,90,95,.22); }
-button[kind="primary"]:hover{ box-shadow:0 5px 18px rgba(255,90,95,.4); transform:translateY(-1px); }
+button[kind="primary"]{ background:var(--green); color:var(--on-green); border:0;
+  box-shadow:0 2px 8px rgba(47,168,102,.22); }
+button[kind="primary"]:hover{ box-shadow:0 5px 18px rgba(47,168,102,.4); transform:translateY(-1px); }
 
-/* ── Tabs — coral selected state ────────────────────────────────────────────── */
+/* ── Tabs — green selected state ────────────────────────────────────────────── */
 .stTabs [data-baseweb="tab-list"]{ gap:6px; }
-.stTabs [aria-selected="true"]{ color:var(--brand-coral) !important; }
-.stTabs [data-baseweb="tab-highlight"]{ background:var(--brand-coral) !important; }
+.stTabs [aria-selected="true"]{ color:var(--green-bright) !important; }
+.stTabs [data-baseweb="tab-highlight"]{ background:var(--green) !important; }
 
-/* ── Sidebar nav: radio → pill list with a coral active rail ────────────────── */
+/* ── Sidebar nav: radio → pill list with a green active rail ────────────────── */
 [data-testid="stSidebar"] [role="radiogroup"]{ gap:1px; }
 [data-testid="stSidebar"] [role="radiogroup"] label{
   border-radius:9px; padding:7px 11px; margin:1px 0; width:100%;
@@ -144,18 +195,34 @@ button[kind="primary"]:hover{ box-shadow:0 5px 18px rgba(255,90,95,.4); transfor
 [data-testid="stSidebar"] [role="radiogroup"] label > div:first-child{ display:none; } /* hide radio dot */
 [data-testid="stSidebar"] [role="radiogroup"] label:hover{ background:rgba(255,255,255,.05); }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){
-  background:rgba(255,90,95,.14); box-shadow:inset 3px 0 0 var(--brand-coral);
+  background:var(--row-you-bg); box-shadow:inset 3px 0 0 var(--green);
 }
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) p{
-  color:var(--brand-coral-hi) !important; font-weight:700;
+  color:var(--green-bright) !important; font-weight:700;
 }
 
 /* ── Surfaces: dataframes / expanders / inputs get the rounded, bordered look ── */
 [data-testid="stDataFrame"]{ border-radius:12px; overflow:hidden; }
 [data-testid="stExpander"]{ border-radius:12px; }
 hr{ border-color:var(--border); }
+
+/* ── Reusable redesign components (eyebrow / card / status pills) ───────────── */
+.eyebrow{ font:600 12px/1 'Inter',sans-serif; letter-spacing:2px;
+  text-transform:uppercase; color:var(--text-low); }
+.dlh-card{ background:var(--bg-surface); border:1px solid var(--border);
+  border-radius:var(--r-card); padding:24px; }
+.pill{ display:inline-block; padding:4px 12px; border-radius:999px;
+  font:600 12px/1.6 'Inter',sans-serif; }
+.pill.green{ background:var(--pill-green-bg); color:var(--pill-green-fg); }
+.pill.gold{ background:var(--pill-gold-bg); color:var(--pill-gold-fg); }
+.pill.red{ background:var(--pill-red-bg); color:var(--pill-red-fg); }
+.pill.blue{ background:var(--pill-blue-bg); color:var(--pill-blue-fg); }
+.pill.purple{ background:var(--pill-purple-bg); color:var(--pill-purple-fg); }
 </style>
 """, unsafe_allow_html=True)
+
+
+inject_theme()
 
 # ── Persistence — all settings route through _store_get/_store_set (below):
 #   Supabase per-user when signed in, session-state when a guest.
@@ -1520,15 +1587,15 @@ def team_rating(rid, prof):
     strong = total >= _stats.median(totals)
     young  = (avg_age <= _stats.median(ages)) or (pick_val >= _stats.median(picks))
     if strong and young:
-        return ("Win Now", "#157a3d",
+        return ("Win Now", TOKENS["green"],
                 "Strong roster with a young core / draft capital — compete now and sustain it.")
     if strong and not young:
-        return ("Fading", "#e8804a",
+        return ("Fading", TOKENS["gold"],
                 "Strong now but aging — your window is closing. Cash veterans for youth + picks.")
     if (not strong) and young:
-        return ("Rebuilding", "#e6b422",
+        return ("Rebuilding", TOKENS["blue"],
                 "Below average now but young / pick-rich — keep accumulating and ascend.")
-    return ("Stuck", "#ff5a5f",
+    return ("Stuck", TOKENS["red"],
             "Below average and aging with little capital — the hardest spot. Sell veterans for youth & picks.")
 
 
@@ -1554,12 +1621,12 @@ def best_trade_partner(rid, team_data):
         return None
     bal = best["balance"]
     if bal >= 0.55:
-        best["difficulty"] = ("Easy", "#157a3d", "strong mutual fit")
+        best["difficulty"] = ("Easy", TOKENS["green"], "strong mutual fit")
     elif bal >= 0.30:
-        best["difficulty"] = ("Workable", "#e6b422", "decent fit, some give-and-take")
+        best["difficulty"] = ("Workable", TOKENS["gold"], "decent fit, some give-and-take")
     else:
         leans = "you need them more" if best["i_get"] > best["i_give"] else "they need you more"
-        best["difficulty"] = ("Tough", "#ff5a5f", f"one-sided — {leans}")
+        best["difficulty"] = ("Tough", TOKENS["red"], f"one-sided — {leans}")
     return best
 
 
@@ -3760,7 +3827,7 @@ elif page == "🔄 Trade Analyzer":
 
         _cc1, _cc2 = st.columns(2)
         with _cc1:
-            st.markdown("<span style='color:#2196F3; font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color:var(--blue); font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
             _team_a = st.selectbox("Team A", _all_teams, index=_all_teams.index(_a_default),
                                    key="calc_team_a", label_visibility="collapsed")
             # Key includes the team so switching teams never carries stale options
@@ -3768,7 +3835,7 @@ elif page == "🔄 Trade Analyzer":
                                      key=f"calc_side_a_{_team_a}", placeholder=f"Add from {_team_a}…",
                                      label_visibility="collapsed")
         with _cc2:
-            st.markdown("<span style='color:#ff5a5f; font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
+            st.markdown("<span style='color:var(--purple); font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
             _team_b = st.selectbox("Team B", _all_teams, index=_all_teams.index(_b_default),
                                    key="calc_team_b", label_visibility="collapsed")
             _side_b = st.multiselect("Players & picks", sorted(_team_assets[_team_b].keys()),
@@ -3787,25 +3854,25 @@ elif page == "🔄 Trade Analyzer":
             _sum     = (_tot_a + _tot_b) or 1
             _pa      = round(_tot_a / _sum * 100)
             if _gap_pct <= 5:
-                _badge_bg, _badge_tx = "#0c2e1a", "#7ee2a8"
+                _badge_bg, _badge_tx = "var(--pill-green-bg)", "var(--pill-green-fg)"
                 _verdict = f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
             else:
-                _badge_bg, _badge_tx = "#3a2e0c", "#f5d27a"
+                _badge_bg, _badge_tx = "var(--pill-gold-bg)", "var(--pill-gold-fg)"
                 _winner = _team_b if _gap > 0 else _team_a
                 _verdict = f"↘ Favours {_winner} by {abs(_gap):,} ({_gap_pct:.0f}%)"
             st.markdown(
-                f"""<div style="border:1px solid #2d3140; border-radius:12px; padding:16px 18px; margin-top:4px;">
+                f"""<div style="border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-top:4px;">
                   <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
-                    <div><div style="font-size:0.72rem; color:#7ab4f0; text-transform:uppercase; letter-spacing:.06em;">{_team_a}</div>
-                         <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_a:,}</div></div>
+                    <div><div style="font-size:0.72rem; color:var(--pill-blue-fg); text-transform:uppercase; letter-spacing:.06em;">{_team_a}</div>
+                         <div style="font-size:1.5rem; font-weight:700; color:var(--text-hi);">{_tot_a:,}</div></div>
                     <div style="text-align:center; align-self:center;">
                          <span style="background:{_badge_bg}; color:{_badge_tx}; padding:5px 12px; border-radius:14px; font-size:0.82rem; font-weight:600;">{_verdict}</span></div>
-                    <div style="text-align:right;"><div style="font-size:0.72rem; color:#f0a0a3; text-transform:uppercase; letter-spacing:.06em;">{_team_b}</div>
-                         <div style="font-size:1.5rem; font-weight:700; color:#fff;">{_tot_b:,}</div></div>
+                    <div style="text-align:right;"><div style="font-size:0.72rem; color:var(--pill-purple-fg); text-transform:uppercase; letter-spacing:.06em;">{_team_b}</div>
+                         <div style="font-size:1.5rem; font-weight:700; color:var(--text-hi);">{_tot_b:,}</div></div>
                   </div>
                   <div style="display:flex; height:20px; border-radius:6px; overflow:hidden; font-size:0.74rem; font-weight:600;">
-                    <div style="width:{_pa}%; background:#2196F3; color:#fff; display:flex; align-items:center; justify-content:center;">{_pa}%</div>
-                    <div style="width:{100 - _pa}%; background:#ff5a5f; color:#fff; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
+                    <div style="width:{_pa}%; background:var(--blue); color:#04210F; display:flex; align-items:center; justify-content:center;">{_pa}%</div>
+                    <div style="width:{100 - _pa}%; background:var(--purple); color:#04210F; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
                   </div>
                 </div>""",
                 unsafe_allow_html=True,
