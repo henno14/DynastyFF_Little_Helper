@@ -13,6 +13,7 @@ import json
 import re
 import base64
 import html as _html
+import statistics as _stats
 import contextlib
 import requests
 import feedparser
@@ -1469,6 +1470,216 @@ def build_trade_analysis(rosters, users, players, fc_values, fc_picks, slot_map,
     return team_data, league_avgs, all_players_by_pos
 
 
+# ── "My Team" dashboard (League Overview) ─────────────────────────────────────
+
+def player_drop_score(value, pts, status, exp, pos_avg, trend_drops=0, tagged_cut=False):
+    """Drop priority — higher = more expendable. Pure & reusable so the FA advisor
+    and the team dashboard agree. trend_drops = Sleeper league-wide drops (24h)."""
+    pos_avg = pos_avg or 1
+    val_score   = max(0.0, 1.0 - (value or 0) / pos_avg) * 40
+    pts_score   = max(0.0, 1.0 - (pts or 0) / 150.0)     * 30
+    inj_score   = (20 if status in ("Out", "IR", "PUP", "Suspended")
+                   else 10 if status in ("Questionable", "Doubtful") else 0)
+    age_score   = min((exp or 0) / 10.0, 1.0)            * 10
+    trend_score = min((trend_drops or 0) / 5000.0, 1.0)  * 25   # mass-dropped across Sleeper
+    score = val_score + pts_score + inj_score + age_score + trend_score
+    reasons = []
+    if tagged_cut:                               score += 1000; reasons.append("✂️ Tagged Cut")
+    if (value or 0) < pos_avg * 0.5:             reasons.append("Low value")
+    if (pts or 0) < 50:                          reasons.append("Low pts")
+    if status in ("Out", "IR", "PUP"):           reasons.append(status)
+    elif status in ("Questionable", "Doubtful"): reasons.append(status)
+    if (exp or 0) >= 7:                          reasons.append(f"{exp}yr vet")
+    if (trend_drops or 0) >= 500:                reasons.append(f"📉 {int(trend_drops):,} Sleeper drops")
+    return score, reasons
+
+
+def _team_value_profile(team_data, players):
+    """{rid: (total_value, avg_age_top12, pick_value)} — inputs for the team rating."""
+    prof = {}
+    for rid, td in team_data.items():
+        vals = []
+        for pos in SKILL_POSITIONS:
+            for p in td.get("pos_players", {}).get(pos, []):
+                vals.append((p.get("value") or 0, players.get(p["pid"], {}).get("age")))
+        vals.sort(key=lambda t: -t[0])
+        total    = sum(v for v, _ in vals)
+        ages     = [a for _, a in vals[:12] if a]
+        avg_age  = sum(ages) / len(ages) if ages else 26.0
+        pick_val = sum(pk.get("value") or 0 for pk in td.get("picks", []))
+        prof[rid] = (total, avg_age, pick_val)
+    return prof
+
+
+def team_rating(rid, prof):
+    """Win Now / Fading / Rebuilding / Stuck + RAG colour + one-line blurb."""
+    totals = [p[0] for p in prof.values()]
+    ages   = [p[1] for p in prof.values()]
+    picks  = [p[2] for p in prof.values()]
+    total, avg_age, pick_val = prof[rid]
+    strong = total >= _stats.median(totals)
+    young  = (avg_age <= _stats.median(ages)) or (pick_val >= _stats.median(picks))
+    if strong and young:
+        return ("Win Now", "#157a3d",
+                "Strong roster with a young core / draft capital — compete now and sustain it.")
+    if strong and not young:
+        return ("Fading", "#e8804a",
+                "Strong now but aging — your window is closing. Cash veterans for youth + picks.")
+    if (not strong) and young:
+        return ("Rebuilding", "#e6b422",
+                "Below average now but young / pick-rich — keep accumulating and ascend.")
+    return ("Stuck", "#ff5a5f",
+            "Below average and aging with little capital — the hardest spot. Sell veterans for youth & picks.")
+
+
+def best_trade_partner(rid, team_data):
+    """Best mutual surplus↔need match: who to talk to, with an easy/tough read."""
+    me = team_data[rid]
+    my_need, my_surplus = me.get("need_scores", {}), me.get("surplus_scores", {})
+    best = None
+    for orid, td in team_data.items():
+        if orid == rid:
+            continue
+        t_need, t_surplus = td.get("need_scores", {}), td.get("surplus_scores", {})
+        get_by_pos  = {pos: my_need.get(pos, 0) * t_surplus.get(pos, 0) for pos in SKILL_POSITIONS}
+        give_by_pos = {pos: t_need.get(pos, 0)  * my_surplus.get(pos, 0) for pos in SKILL_POSITIONS}
+        i_get, i_give = sum(get_by_pos.values()), sum(give_by_pos.values())
+        mutual = i_get + i_give
+        if best is None or mutual > best["mutual"]:
+            best = {"name": td["name"], "mutual": mutual, "i_get": i_get, "i_give": i_give,
+                    "balance": min(i_get, i_give) / max(i_get, i_give, 1),
+                    "get_pos":  max(get_by_pos,  key=get_by_pos.get)  if i_get  else None,
+                    "give_pos": max(give_by_pos, key=give_by_pos.get) if i_give else None}
+    if not best or best["mutual"] <= 0:
+        return None
+    bal = best["balance"]
+    if bal >= 0.55:
+        best["difficulty"] = ("Easy", "#157a3d", "strong mutual fit")
+    elif bal >= 0.30:
+        best["difficulty"] = ("Workable", "#e6b422", "decent fit, some give-and-take")
+    else:
+        leans = "you need them more" if best["i_get"] > best["i_give"] else "they need you more"
+        best["difficulty"] = ("Tough", "#ff5a5f", f"one-sided — {leans}")
+    return best
+
+
+def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
+                          players, player_pts, rosters, pos_ranks,
+                          fc_values, val_maps, value_source, val_col):
+    """Live 4-panel snapshot for the selected team, shown on League Overview."""
+    st.markdown("### 📋 My Team Dashboard")
+    if not my_team or my_team not in team_name_to_rid:
+        st.info("Pick **My Team** in the sidebar to unlock your live dashboard — team rating, "
+                "trade needs, best trade partner, and cut/add suggestions.")
+        return
+    rid  = team_name_to_rid[my_team]
+    td   = team_data[rid]
+    prof = _team_value_profile(team_data, players)
+
+    # Panel 1 — Team Rating
+    rating, colour, blurb = team_rating(rid, prof)
+    total, avg_age, pick_val = prof[rid]
+    _rank = sorted(prof, key=lambda r: -prof[r][0]).index(rid) + 1
+    st.markdown(
+        f'<div style="border-left:5px solid {colour};background:#171c26;border:1px solid #2a3344;'
+        f'border-radius:12px;padding:11px 16px;margin:2px 0 14px;">'
+        f'<span style="background:{colour};color:#fff;font-weight:600;font-size:.8rem;'
+        f'padding:3px 11px;border-radius:6px;">{rating}</span>'
+        f'<span style="color:#c7cdd6;margin-left:10px;font-size:.9rem;">{_html.escape(blurb)}</span><br>'
+        f'<span style="color:#9aa4b2;font-size:.76rem;">Roster value rank #{_rank}/{len(prof)} · '
+        f'avg age (top 12) {avg_age:.1f} · pick capital {pick_val:,.0f}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    c1, c2 = st.columns(2)
+    # Panel 2 — Trade Needs
+    with c1:
+        st.markdown("#### 🧭 Top Trade Needs")
+        needs = sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])[:3]
+        if needs:
+            n_teams = len(team_data)
+            _rows = [{"Pos": pos, "Need": f"{score:.0f}",
+                      "Your Avg": round(td.get("pos_avgs", {}).get(pos) or 0),
+                      "Lg Avg": round(league_avgs.get(pos) or 0),
+                      "Rank": f"{td.get('pos_league_rank', {}).get(pos)}/{n_teams}"
+                              if td.get("pos_league_rank", {}).get(pos) else "—"}
+                     for pos, score in needs]
+            st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
+        else:
+            st.caption("No clear needs — roster is balanced.")
+
+    # Panel 3 — Best Trade Partner
+    with c2:
+        st.markdown("#### 🤝 Best Trade Partner")
+        bp = best_trade_partner(rid, team_data)
+        if bp:
+            d_label, d_colour, d_why = bp["difficulty"]
+            _get  = f"their **{bp['get_pos']}**"  if bp["get_pos"]  else "depth"
+            _give = f"your **{bp['give_pos']}**"   if bp["give_pos"] else "depth"
+            st.markdown(
+                f"**{_html.escape(bp['name'])}** &nbsp;<span style='background:{d_colour};color:#fff;"
+                f"font-size:.72rem;font-weight:600;padding:2px 9px;border-radius:6px;'>{d_label}</span>",
+                unsafe_allow_html=True)
+            st.caption(f"They have {_get} you need; you offer {_give} they need — {d_why}.")
+        else:
+            st.caption("No strong mutual-need match in the league right now.")
+
+    # Panel 4 — Cut-for-Pickup
+    st.markdown("#### ♻️ Cut-for-Pickup")
+    _, _drops = load_trending()
+    drop_counts = {str(d["player_id"]): d.get("count", 0) for d in (_drops or [])}
+    _tags = st.session_state.get("player_tags", {})
+    cuts = []
+    for pos in SKILL_POSITIONS:
+        pavg = td.get("pos_avgs", {}).get(pos) or 1
+        for pp in td.get("pos_players", {}).get(pos, []):
+            pid, pobj = pp["pid"], players.get(pp["pid"], {})
+            sc, reasons = player_drop_score(
+                pp.get("value") or 0, player_pts.get(pid) or 0,
+                pobj.get("injury_status") or pobj.get("status") or "Active",
+                pobj.get("years_exp") or 0, pavg,
+                trend_drops=drop_counts.get(str(pid), 0),
+                tagged_cut=(_tags.get(pp["name"]) == "Cut"))
+            cuts.append({"Player": pp["name"], "Pos": pos, val_col: pp.get("value") or 0,
+                         "Why": " · ".join(reasons) if reasons else "depth", "_s": sc})
+    cuts.sort(key=lambda x: -x["_s"])
+    cuts3 = [{k: v for k, v in c.items() if k != "_s"} for c in cuts[:3]]
+
+    df_fa = build_fa_df(rosters, players, player_pts, pos_ranks, fc_values, val_maps, value_source)
+    df_fa = df_fa.rename(columns={"Value": val_col})
+    fa_sorted = df_fa.sort_values(val_col, ascending=False, na_position="last")
+    need_pos = [p for p, _ in sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])]
+    picks_rows, seen = [], set()
+    for pos in need_pos[:2]:
+        row = fa_sorted[fa_sorted["Pos"] == pos].head(1)
+        if not row.empty and row.iloc[0]["Player"] not in seen:
+            picks_rows.append(row.iloc[0]); seen.add(row.iloc[0]["Player"])
+    for _, r0 in fa_sorted.iterrows():
+        if len(picks_rows) >= 3:
+            break
+        if r0["Player"] not in seen:
+            picks_rows.append(r0); seen.add(r0["Player"])
+
+    p1, p2 = st.columns(2)
+    with p1:
+        st.markdown("**✂️ Consider cutting**")
+        if cuts3:
+            st.dataframe(pd.DataFrame(cuts3), hide_index=True, width="stretch",
+                         column_config={val_col: COL_CFG["Value"]})
+        else:
+            st.caption("Roster looks lean.")
+    with p2:
+        st.markdown("**🎯 Consider adding** *(free agents)*")
+        if picks_rows:
+            _cols = [c for c in ["Player", "Pos", "NFL Team", val_col] if c in df_fa.columns]
+            st.dataframe(pd.DataFrame(picks_rows)[_cols], hide_index=True, width="stretch",
+                         column_config={val_col: COL_CFG["Value"]})
+        else:
+            st.caption("No standout free agents available.")
+    st.caption("Cuts weigh value vs positional average, production, injury, age — and "
+               "**Sleeper league-wide drops** (📉 = many managers dropping this player).")
+
+
 # ── Fantasy News ─────────────────────────────────────────────────────────────
 
 NEWS_FEEDS = {
@@ -1993,6 +2204,13 @@ if page == "🏠 League Overview":
         _loaded = [f"{vs_label(s)} {_src_counts[s]:,}"
                    for s in available_value_sources(num_qbs, owner_view) if s in _src_counts]
         st.caption("Value sources loaded — " + " · ".join(_loaded))
+
+        st.markdown("---")
+
+        # ── My Team dashboard (rating · needs · best partner · cut-for-pickup) ────
+        render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
+                              players, player_pts, rosters, pos_ranks,
+                              fc_values, val_maps, value_source, val_col)
 
         st.markdown("---")
 
@@ -2665,8 +2883,10 @@ elif page == "🔍 Free Agents":
 
         # ── Drop candidates ───────────────────────────────────────────────────
         st.markdown("#### ✂️ Drop Candidates *(if you need a roster spot)*")
-        st.caption("Rostered players ranked by drop priority — weighs value vs positional average, recent points, injury status, and experience.")
+        st.caption("Rostered players ranked by drop priority — weighs value vs positional average, recent points, injury status, experience, and **Sleeper league-wide drops**.")
 
+        _, _fa_drops = load_trending()
+        _drop_counts = {str(d["player_id"]): d.get("count", 0) for d in (_fa_drops or [])}
         _drop_rows = []
         for _pos in SKILL_POSITIONS:
             _pos_avg_val = _pos_avgs.get(_pos) or 1
@@ -2678,24 +2898,10 @@ elif page == "🔍 Free Agents":
                 _status = _pobj.get("injury_status") or _pobj.get("status") or "Active"
                 _exp    = _pobj.get("years_exp") or 0
 
-                # Drop score — higher = more expendable
-                _val_score  = max(0.0, 1.0 - _val / _pos_avg_val) * 40   # below pos avg → +score
-                _pts_score  = max(0.0, 1.0 - _pts / 150.0)       * 30   # low pts → +score
-                _inj_score  = (20 if _status in ("Out", "IR", "PUP", "Suspended")
-                               else 10 if _status in ("Questionable", "Doubtful") else 0)
-                _age_score  = min(_exp / 10.0, 1.0)               * 10   # veterans → +score
-                _drop_score = _val_score + _pts_score + _inj_score + _age_score
-
-                _reasons = []
-                # Players you've tagged ✂️ Cut always surface at the top of the list
-                if st.session_state.player_tags.get(_pp["name"]) == "Cut":
-                    _drop_score += 1000
-                    _reasons.append("✂️ Tagged Cut")
-                if _val < _pos_avg_val * 0.5:             _reasons.append("Low value")
-                if _pts < 50:                             _reasons.append("Low pts")
-                if _status in ("Out", "IR", "PUP"):       _reasons.append(_status)
-                elif _status in ("Questionable","Doubtful"): _reasons.append(_status)
-                if _exp >= 7:                             _reasons.append(f"{_exp}yr vet")
+                _drop_score, _reasons = player_drop_score(
+                    _val, _pts, _status, _exp, _pos_avg_val,
+                    trend_drops=_drop_counts.get(str(_pid), 0),
+                    tagged_cut=(st.session_state.player_tags.get(_pp["name"]) == "Cut"))
 
                 _drop_rows.append({
                     "Player":              _pp["name"],
