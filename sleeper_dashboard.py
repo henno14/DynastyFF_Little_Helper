@@ -12,6 +12,7 @@ import os
 import json
 import re
 import base64
+import html as _html
 import contextlib
 import requests
 import feedparser
@@ -584,13 +585,15 @@ def get_active_value(pid, fc_values, val_maps, source):
 
     if source == "FC Dynasty":
         return _norm_fc(fc.get("value"))
+    elif source == "FC Redraft":            # win-now/seasonal lens — NOT in consensus
+        return _norm_fc(fc.get("redraftValue"))
     elif source == "DN Dynasty":
         return dn.get("value")
     elif source == "KTC":
         return ktc.get("value")
     elif source == "DP Values":
         return dp.get("value")
-    else:  # Consensus Avg
+    else:  # Consensus Avg — dynasty sources only (redraft excluded by design)
         vals = [v for v in [
             _norm_fc(fc.get("value")),
             dn.get("value"),
@@ -609,6 +612,8 @@ def get_active_rank(pid, fc_values, val_maps, source):
 
     if source == "FC Dynasty":
         return fc.get("overallRank")
+    elif source == "FC Redraft":
+        return fc.get("redraftRank")
     elif source == "DN Dynasty":
         return dn.get("rank")
     elif source == "KTC":
@@ -628,6 +633,7 @@ def get_active_rank(pid, fc_values, val_maps, source):
 def value_col_label(source):
     return {
         "FC Dynasty":    "FC D Value",
+        "FC Redraft":    "FC Redraft",
         "DN Dynasty":    "DN Value",
         "KTC":           "KTC Value",
         "DP Values":     "DP Value",
@@ -635,17 +641,124 @@ def value_col_label(source):
     }.get(source, "Value")
 
 
-ALL_VALUE_SOURCES = ["FC Dynasty", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+# Friendly, un-abbreviated names for the value-source dropdowns. The stored
+# session key stays the short form ("FC Dynasty"); only the displayed label changes.
+VALUE_SOURCE_LABELS = {
+    "FC Dynasty":    "FantasyCalc",
+    "FC Redraft":    "FantasyCalc (Redraft)",
+    "DN Dynasty":    "DynastyNerds",
+    "KTC":           "KeepTradeCut",
+    "DP Values":     "DynastyProcess",
+    "Consensus Avg": "Consensus Average",
+}
 
-def available_value_sources(num_qbs):
-    """Value sources valid for this league's QB format. KeepTradeCut and
-    DynastyNerds are SuperFlex-only scrapes (~1.9x QB inflation in 1-QB leagues),
-    so they're hidden for single-QB leagues; FantasyCalc and DynastyProcess both
-    adapt to the format and stay. Consensus Avg then blends only what's left
-    (its math averages the populated maps, and KTC/DN are emptied in 1-QB)."""
-    if num_qbs is not None and num_qbs < 2:
-        return ["FC Dynasty", "DP Values", "Consensus Avg"]
-    return list(ALL_VALUE_SOURCES)
+def vs_label(source):
+    return VALUE_SOURCE_LABELS.get(source, source)
+
+# FantasyCalc Redraft = win-now/seasonal values (no dynasty youth premium). A
+# standalone lens for redraft / brand-new leagues; deliberately NOT blended into
+# Consensus Average (its meaning differs from the dynasty sources).
+REDRAFT_SOURCE = "FC Redraft"
+
+def redraft_note(source):
+    return ("**FantasyCalc (Redraft)** — win-now, single-season values (no dynasty "
+            "youth premium). Best for **redraft or brand-new leagues**.") if source == REDRAFT_SOURCE else None
+
+
+# FantasyCalc (API) + DynastyProcess (open data) are licence-clean → public.
+# KeepTradeCut + DynastyNerds are scrapes held back pending permission: shown
+# only to the owner (OWNER_EMAILS secret) AND only where they're format-correct
+# (SuperFlex / 2QB — they're ~1.9x QB-inflated in 1-QB leagues).
+ALL_VALUE_SOURCES    = ["FC Dynasty", "FC Redraft", "DN Dynasty", "KTC", "DP Values", "Consensus Avg"]
+PUBLIC_VALUE_SOURCES = ["FC Dynasty", "FC Redraft", "DP Values", "Consensus Avg"]
+
+
+def _is_owner():
+    """True when the signed-in email is listed in the OWNER_EMAILS secret."""
+    try:
+        raw = st.secrets.get("OWNER_EMAILS", "")
+    except Exception:
+        raw = ""
+    owners = {e.strip().lower() for e in (raw or "").split(",") if e.strip()}
+    em = (st.session_state.get("auth_email") or "").strip().lower()
+    return bool(em) and em in owners
+
+
+def available_value_sources(num_qbs, owner=False):
+    """Value sources offered for this league. Public = FantasyCalc + DynastyProcess
+    + Consensus. KTC/DN are owner-only and SuperFlex-only, so they appear only when
+    owner and num_qbs >= 2 (in 1-QB they'd be ~1.9x QB-inflated)."""
+    if owner and (num_qbs is None or num_qbs >= 2):
+        return list(ALL_VALUE_SOURCES)
+    return list(PUBLIC_VALUE_SOURCES)
+
+
+# ── League format helpers — Sleeper avatar tile + KTC-style format badges ─────
+IDP_SLOTS = {"DL", "LB", "DB", "IDP_FLEX", "DE", "DT", "CB", "S", "SS", "FS", "EDGE"}
+
+def league_avatar_url(league, thumb=True):
+    av = league.get("avatar")
+    if not av:
+        return None
+    return f"https://sleepercdn.com/avatars/{'thumbs/' if thumb else ''}{av}"
+
+def league_format_badges(league):
+    """KTC-style chips: teams · QB format · starters · PPR · TE-prem · IDP."""
+    rp = league.get("roster_positions") or []
+    sc = league.get("scoring_settings") or {}
+    teams = league.get("total_rosters") or "?"
+    if "SUPER_FLEX" in rp:    qb = "Superflex"
+    elif rp.count("QB") >= 2: qb = "2QB"
+    else:                     qb = "1QB"
+    starters = len([p for p in rp if p not in ("BN", "TAXI", "IR")])
+    rec = sc.get("rec", 0) or 0
+    ppr = "PPR" if rec >= 1 else ("Half-PPR" if rec >= 0.5 else "Standard")
+    badges = [f"{teams} teams", qb, f"Start {starters}", ppr]
+    if sc.get("bonus_rec_te"): badges.append("TE Premium")
+    if set(rp) & IDP_SLOTS:    badges.append("IDP")
+    return badges
+
+def league_avatar_tag(league, px=40, radius=10):
+    """HTML for the league's Sleeper avatar tile (falls back to a green initial
+    tile when the league has no avatar). Reused by the sidebar, setup, and the
+    main page title."""
+    _url  = league_avatar_url(league)
+    _name = _html.escape(league.get("name", "Dynasty League"))
+    if _url:
+        return (f'<img src="{_url}" alt="" style="width:{px}px;height:{px}px;'
+                f'border-radius:{radius}px;object-fit:cover;border:1px solid var(--border);flex:0 0 auto;">')
+    return (f'<div style="width:{px}px;height:{px}px;border-radius:{radius}px;flex:0 0 auto;'
+            f'background:linear-gradient(135deg,#1f6f43,#14532d);display:flex;align-items:center;'
+            f'justify-content:center;font-weight:600;font-size:{px*0.42:.0f}px;color:#fff;">'
+            f'{(_name[:1] or "?").upper()}</div>')
+
+def render_league_header(league, name_size="1.05rem"):
+    """Avatar tile + league name (replaces the football-emoji title)."""
+    _name = _html.escape(league.get("name", "Dynasty League"))
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:11px;margin-bottom:2px;">{league_avatar_tag(league)}'
+        f'<div style="font-weight:600;font-size:{name_size};line-height:1.15;">{_name}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+def render_league_title(league):
+    """Big page title with the league avatar tile beside the name (h1-styled)."""
+    _name = _html.escape(league.get("name", "Dynasty League"))
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:15px;margin:0 0 .35rem;">'
+        f'{league_avatar_tag(league, px=54, radius=14)}'
+        f'<h1 style="margin:0;">{_name}</h1></div>',
+        unsafe_allow_html=True,
+    )
+
+def render_league_badges(league):
+    pills = "".join(
+        f'<span style="display:inline-block;background:#1b212c;border:1px solid #2a3344;'
+        f'border-radius:6px;padding:2px 8px;margin:3px 5px 0 0;font-size:.72rem;'
+        f'color:#c7cdd6;">{_html.escape(str(b))}</span>'
+        for b in league_format_badges(league)
+    )
+    st.markdown(f'<div style="margin:2px 0 4px;">{pills}</div>', unsafe_allow_html=True)
 
 
 POSITION_COLORS = {
@@ -1584,14 +1697,16 @@ with _load_spin:
             st.rerun()
         st.stop()
     num_qbs      = derive_league_shape(league)[0]        # 1 = single-QB, 2 = superflex/2QB
+    owner_view   = _is_owner()                           # owner sees the held-back KTC/DN sources
     dn_map       = fetch_dn_values()
     ktc_by_id    = fetch_ktc_values()
     dp_map, cw_ktc = fetch_dp_values(num_qbs)            # DP reads its 1QB column when 1-QB
     ktc_map      = build_ktc_sleeper_map(ktc_by_id, cw_ktc, players)
-    # Single-QB leagues: KTC & DynastyNerds are SuperFlex-only (~1.9x QB inflation),
-    # so drop them entirely — they're hidden as options AND, because the maps are
-    # empty, excluded from Consensus Avg automatically. FC + DP both adapt to 1-QB.
-    if num_qbs < 2:
+    # KTC & DynastyNerds are held back (legality) AND SuperFlex-only. Drop their
+    # maps entirely for the public, and for everyone in 1-QB leagues — emptying the
+    # maps both removes them as options and auto-excludes them from Consensus Avg.
+    # The plumbing (fetch + crosswalk) stays so owner view / future re-enable is trivial.
+    if (not owner_view) or num_qbs < 2:
         dn_map = {}
         ktc_map = {}
     val_maps     = {"dn": dn_map, "ktc": ktc_map, "dp": dp_map}
@@ -1612,24 +1727,26 @@ if st.session_state.get("_onboarded_for") != league_id:
         # Centre + constrain so it matches the login card and reads intentionally
         _su_l, _su_c, _su_r = st.columns([1, 1.6, 1])
         with _su_c:
-            st.title(f"🏈 {league.get('name', 'Your league')}")
+            render_league_header(league, name_size="1.7rem")
+            render_league_badges(league)
             st.caption("Quick setup — you can change either of these anytime from the sidebar.")
             # st.form batches the dropdowns: picking a team / value source no longer
             # triggers a rerun on every change — nothing saves until "Continue".
             with st.form("setup_form", border=False):
                 _setup_team = st.selectbox("Which team is yours?", ["—"] + _teams0, key="setup_team")
                 _setup_vs = st.selectbox(
-                    "Value source", available_value_sources(num_qbs),
-                    key="setup_vs",
+                    "Value source", available_value_sources(num_qbs, owner_view),
+                    key="setup_vs", format_func=vs_label,
+                    help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
+                         "win-now/seasonal lens — pick it for redraft or brand-new leagues.",
                 )
                 st.caption(
-                    "**Value source** sets which dynasty ranking powers every player's value & rank "
-                    "across the app — FantasyCalc, DynastyNerds, KeepTradeCut, DynastyProcess, or a "
-                    "consensus average of them. You can switch it anytime from the sidebar."
+                    "**Value source** sets which dynasty ranking powers every player's value & "
+                    "rank across the app. You can switch it anytime from the sidebar."
                 )
-                if num_qbs < 2:
-                    st.caption("ℹ️ This is a **1-QB league** — KeepTradeCut & DynastyNerds are "
-                               "SuperFlex-only, so they're hidden to avoid inflated QB values.")
+                _setup_rd = redraft_note(_setup_vs)
+                if _setup_rd:
+                    st.caption("ℹ️ " + _setup_rd)
                 _setup_go = st.form_submit_button("Continue →", type="primary")
             if _setup_go:
                 save_league_prefs(league_id, value_source=_setup_vs,
@@ -1738,8 +1855,9 @@ with st.sidebar:
                         st.rerun()
 
     st.divider()
-    st.subheader(f"🏈 {league.get('name', 'Dynasty League')}")
-    st.caption(f"Sleeper · {league.get('season', '')} · {league.get('total_rosters', '?')} teams")
+    render_league_header(league)
+    render_league_badges(league)
+    st.caption(f"Sleeper · {league.get('season', '')}")
 
     # My Team + Value Source — persisted per league; re-seeded when league changes
     _team_opts = ["—"] + _sb_team_names
@@ -1749,7 +1867,7 @@ with st.sidebar:
         _saved_team = _prefs.get("team")
         st.session_state.my_team_pick = _saved_team if _saved_team in _team_opts else "—"
         _saved_vs = _prefs.get("value_source")
-        _vs_opts_boot = available_value_sources(num_qbs)
+        _vs_opts_boot = available_value_sources(num_qbs, owner_view)
         st.session_state.value_source = _saved_vs if _saved_vs in _vs_opts_boot else "FC Dynasty"
         # New league context → page-level sticky team choices no longer apply
         for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
@@ -1769,12 +1887,17 @@ with st.sidebar:
     # Value source — drives every Value/Rank column; persisted per league.
     # List is format-filtered (KTC/DN hidden for 1-QB); coerce any stale saved
     # value into the allowed set so the selectbox can't raise.
-    _vs_options_sb = available_value_sources(num_qbs)
+    _vs_options_sb = available_value_sources(num_qbs, owner_view)
     if st.session_state.get("value_source") not in _vs_options_sb:
         st.session_state.value_source = "FC Dynasty"
-    st.selectbox("Value Source", _vs_options_sb, key="value_source")
-    if num_qbs < 2:
-        st.caption("ℹ️ KTC & DynastyNerds are SuperFlex-only — hidden for your 1-QB league.")
+    st.selectbox("Value Source", _vs_options_sb, key="value_source", format_func=vs_label,
+                 help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
+                      "win-now/seasonal lens — pick it for redraft or brand-new leagues.")
+    _rd_note = redraft_note(st.session_state.value_source)
+    if _rd_note:
+        st.caption("ℹ️ " + _rd_note)
+    if owner_view and num_qbs < 2:
+        st.caption("ℹ️ Owner view: KeepTradeCut & DynastyNerds are SuperFlex-only — hidden for this 1-QB league.")
     if st.session_state.get("_last_value_source") != st.session_state.value_source:
         save_league_prefs(league_id, value_source=st.session_state.value_source)
         st.session_state._last_value_source = st.session_state.value_source
@@ -1855,7 +1978,7 @@ if st.session_state.get("_toast_msg"):
 if page == "🏠 League Overview":
     @st.fragment
     def _frag_league_overview():
-        st.title(league.get("name", "Dynasty League"))
+        render_league_title(league)
 
         # Top metrics
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -1864,10 +1987,12 @@ if page == "🏠 League Overview":
         col3.metric("Rookies Ranked", len(fc_rookies))
         col4.metric("Pick Values",    len(fc_picks))
         col5.metric("Stats Season",   STATS_SEASON)
-        st.caption(
-            f"Value sources loaded — FantasyCalc {len(fc_values):,} · DynastyNerds {len(dn_map):,} · "
-            f"KeepTradeCut {len(ktc_map):,} · DynastyProcess {len(dp_map):,}"
-        )
+        # Only list the sources this viewer can actually use (counts are dynamic).
+        _src_counts = {"FC Dynasty": len(fc_values), "DN Dynasty": len(dn_map),
+                       "KTC": len(ktc_map), "DP Values": len(dp_map)}
+        _loaded = [f"{vs_label(s)} {_src_counts[s]:,}"
+                   for s in available_value_sources(num_qbs, owner_view) if s in _src_counts]
+        st.caption("Value sources loaded — " + " · ".join(_loaded))
 
         st.markdown("---")
 
@@ -2247,7 +2372,10 @@ elif page == "📋 Rosters & Draft Picks":
     dv = df_r[mask]
 
     # All four sources side-by-side (merged from the old Players page) + Cons. Avg
-    _src_cols = ["FC D Value", "DN Value", "KTC Value", "DP Value", "Cons. Avg"]
+    # Only show the value columns that are actually available for this league/viewer
+    # (KTC/DN are hidden for the public and in 1-QB), so no empty columns appear.
+    _src_cols = [value_col_label(s) for s in available_value_sources(num_qbs, owner_view)]
+    _src_cols = [c for c in _src_cols if c in dv.columns]
     display_cols = (["Team", "Owner", "Slot", "Player", "Pos", "NFL Team", "Roster Spot",
                      "Age", "Exp", "Status", f"{STATS_SEASON} Pts", "Pos Rank"]
                     + _src_cols + ["Rank", "30d Trend", "Tier"])
