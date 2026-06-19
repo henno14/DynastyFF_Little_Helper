@@ -30,6 +30,7 @@ from sleeper_dynasty_tracker import (
     compute_fantasy_pts, build_pos_ranks,
     SCORING_LABELS, DYNASTY_POSITIONS,
 )
+import insight_text as it   # natural-language insight engine (templates if no API key)
 
 _APP_DIR    = os.path.dirname(os.path.abspath(__file__))
 _ASSETS_DIR = os.path.join(_APP_DIR, "assets")
@@ -1636,6 +1637,65 @@ def best_trade_partner(rid, team_data):
     return best
 
 
+# ── Insight facts: derive win-now / future / power ranks for every team from
+#    values the app ALREADY computes (no re-fetch), then hand to insight_text. ──
+def _league_ranks_for_facts(team_data, players, prof=None):
+    """{rid: (season_rank, dynasty_rank, power_rank)} — win-now = roster value,
+    future = youth + pick-capital blend, power = mean positional league rank
+    (same ordering as the Power Rankings table). All from existing computations."""
+    prof = prof or _team_value_profile(team_data, players)
+    rids = list(team_data)
+    n = len(rids) or 1
+    season  = {r: i + 1 for i, r in enumerate(sorted(rids, key=lambda r: -prof[r][0]))}
+    youth   = {r: i + 1 for i, r in enumerate(sorted(rids, key=lambda r: prof[r][1]))}
+    picks   = {r: i + 1 for i, r in enumerate(sorted(rids, key=lambda r: -prof[r][2]))}
+    fut     = {r: (youth[r] + picks[r]) / 2 for r in rids}
+    dynasty = {r: i + 1 for i, r in enumerate(sorted(rids, key=lambda r: fut[r]))}
+
+    def _avg_pos_rank(r):
+        rk = [v for v in (team_data[r].get("pos_league_rank") or {}).values() if v]
+        return sum(rk) / len(rk) if rk else n
+    power = {r: i + 1 for i, r in enumerate(sorted(rids, key=_avg_pos_rank))}
+    return {r: (season[r], dynasty[r], power[r]) for r in rids}
+
+
+def build_my_team_facts(my_team, team_name_to_rid, team_data, players, value_source=None):
+    """Assemble the fact object for the user's team, or None if not selectable."""
+    if not my_team or my_team not in team_name_to_rid:
+        return None
+    rid  = team_name_to_rid[my_team]
+    prof = _team_value_profile(team_data, players)
+    s_rank, d_rank, p_rank = _league_ranks_for_facts(team_data, players, prof)[rid]
+    positions = {k: v for k, v in (team_data[rid].get("pos_league_rank") or {}).items() if v}
+    if not any(p in positions for p in ("QB", "RB", "WR", "TE")):
+        return None
+    total, avg_age, _pick = prof[rid]
+    return it.build_team_facts(
+        team=my_team, teams_in_league=len(team_data), power_rank=p_rank,
+        positions=positions, season_rank=s_rank, dynasty_rank=d_rank,
+        roster_value=total, avg_age=avg_age, value_source=value_source)
+
+
+def _insight_week() -> str:
+    """ISO year+week bucket so insight calls are cached one-per-week."""
+    y, w, _ = datetime.now(timezone.utc).isocalendar()
+    return f"{y}W{w:02d}"
+
+
+def render_bottom_line(facts, cache_key):
+    """Gold-accent verdict banner (concept-2). bottom_line comes from the insight
+    engine — real Claude phrasing if a key is set, deterministic templates otherwise."""
+    bl = it.generate_team_insights(facts, cache_key)["bottom_line"]
+    st.markdown(
+        '<div class="dlh-card" style="border-left:4px solid var(--gold);margin-bottom:18px;">'
+        '<div class="eyebrow" style="color:var(--gold);">Bottom line</div>'
+        f'<div style="font-size:20px;font-weight:500;color:var(--text-hi);'
+        f'margin-top:8px;line-height:1.4;">{_html.escape(bl)}</div>'
+        '<div style="font-size:13px;color:var(--text-mid);margin-top:8px;">'
+        'Based on starter quality, roster age, and pick capital.</div>'
+        '</div>', unsafe_allow_html=True)
+
+
 def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                           players, player_pts, rosters, pos_ranks,
                           fc_values, val_maps, value_source, val_col):
@@ -1663,6 +1723,19 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
         f'avg age (top 12) {avg_age:.1f} · pick capital {pick_val:,.0f}</span></div>',
         unsafe_allow_html=True,
     )
+
+    # Season + dynasty status pills (concept-2 / CODE-PROMPT §2.1)
+    _n = len(team_data)
+    _sr, _dr, _ = _league_ranks_for_facts(team_data, players, prof)[rid]
+    _sea, _dyn = it.season_status(_sr, _n), it.dynasty_status(_dr, _n)
+    _sc = {"contender": "green", "in the mix": "gold", "long shot": "red"}
+    _dc = {"ascending": "green", "stable": "gold", "aging": "red"}
+    st.markdown(
+        f'<div style="margin:-8px 0 16px;">'
+        f'<span class="pill {_sc[_sea]}">This season · {_sea.capitalize()} ({_sr}/{_n})</span>'
+        f'&nbsp;&nbsp;'
+        f'<span class="pill {_dc[_dyn]}">Dynasty · {_dyn.capitalize()} ({_dr}/{_n})</span>'
+        f'</div>', unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     # Panel 2 — Trade Needs
@@ -2278,6 +2351,13 @@ if page == "🏠 League Overview":
     @st.fragment
     def _frag_league_overview():
         render_league_title(league)
+
+        # Bottom Line verdict banner (scoped to My Team) — concept-2 P2 #6.
+        # Renders template prose with no API key; Claude phrasing when one is set.
+        _bl_facts = build_my_team_facts(my_team, team_name_to_rid, team_data, players, value_source)
+        if _bl_facts:
+            render_bottom_line(_bl_facts,
+                               (league.get("league_id"), my_team, value_source, _insight_week()))
 
         # Top metrics — KPI cards to concept-2 spec: eyebrow → 40px Space Grotesk
         # value inside a .dlh-card, with the green→gold accent rail.
