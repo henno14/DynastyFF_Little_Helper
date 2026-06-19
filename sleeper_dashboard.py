@@ -95,8 +95,13 @@ def inject_theme():
     the single source of truth for the dark "astroturf" look; keep it in sync
     with .streamlit/config.toml and the Python TOKENS dict above."""
     st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
+/* Fonts via @import INSIDE the <style> block (not a <link> tag): Streamlit's
+   markdown treats a raw-HTML block starting with <style> as CommonMark type-1
+   (runs to </style>, blank lines OK), but a block starting with <link> as
+   type-6, which ends at the first blank line — that would spill the rest of
+   this CSS onto the page as literal text. Keep the @import here. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 /* ── Design tokens — single source of truth (CSS side) ──────────────────────── */
 :root{
   /* Surfaces */
