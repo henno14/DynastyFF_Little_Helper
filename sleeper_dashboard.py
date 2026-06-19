@@ -876,7 +876,7 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
             data, width="stretch", hide_index=True, height=_h,
             key=f"{editor_key}_{_ver}", column_config=cfg, disabled=disabled,
         )
-        _submitted = st.form_submit_button("💾 Save favourites", type="primary")
+        _submitted = st.form_submit_button("Save favourites", type="primary", icon=":material/save:")
     if _submitted:
         new_favs = set(favs)
         for _, row in edited.iterrows():
@@ -925,7 +925,7 @@ def tag_editor(roster_players, editor_key):
             },
             disabled=["Player", "Pos", "Value"],
         )
-        _submitted = st.form_submit_button("💾 Save tags", type="primary")
+        _submitted = st.form_submit_button("Save tags", type="primary", icon=":material/save:")
     if _submitted:
         new_tags = dict(tags)
         for _, r in edited.iterrows():
@@ -1634,7 +1634,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                           players, player_pts, rosters, pos_ranks,
                           fc_values, val_maps, value_source, val_col):
     """Live 4-panel snapshot for the selected team, shown on League Overview."""
-    st.markdown("### 📋 My Team Dashboard")
+    st.markdown("### :material/leaderboard: My Team Dashboard")
     if not my_team or my_team not in team_name_to_rid:
         st.info("Pick **My Team** in the sidebar to unlock your live dashboard — team rating, "
                 "trade needs, best trade partner, and cut/add suggestions.")
@@ -1661,7 +1661,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
     c1, c2 = st.columns(2)
     # Panel 2 — Trade Needs
     with c1:
-        st.markdown("#### 🧭 Top Trade Needs")
+        st.markdown("#### :material/explore: Top Trade Needs")
         needs = sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])[:3]
         if needs:
             n_teams = len(team_data)
@@ -1677,7 +1677,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
 
     # Panel 3 — Best Trade Partner
     with c2:
-        st.markdown("#### 🤝 Best Trade Partner")
+        st.markdown("#### :material/handshake: Best Trade Partner")
         bp = best_trade_partner(rid, team_data)
         if bp:
             d_label, d_colour, d_why = bp["difficulty"]
@@ -1692,7 +1692,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
             st.caption("No strong mutual-need match in the league right now.")
 
     # Panel 4 — Cut-for-Pickup
-    st.markdown("#### ♻️ Cut-for-Pickup")
+    st.markdown("#### :material/autorenew: Cut-for-Pickup")
     _, _drops = load_trending()
     drop_counts = {str(d["player_id"]): d.get("count", 0) for d in (_drops or [])}
     _tags = st.session_state.get("player_tags", {})
@@ -1868,7 +1868,7 @@ if not st.session_state.get("league_id"):
                 unsafe_allow_html=True,
             )
         else:
-            st.title("🏈 Dynasty FF Lil' Helper")
+            st.title("Dynasty FF Lil' Helper")
         st.markdown(
             '<p style="text-align:center; color:#9aa4b2; max-width:620px; margin:0 auto 0.5rem;">'
             "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
@@ -1879,7 +1879,7 @@ if not st.session_state.get("league_id"):
         if st.session_state.get("auth_email"):
             st.success(f"✅ Signed in as **{st.session_state.auth_email}** — pick your league below "
                        "to get started (your settings will save automatically from now on).")
-        _tab_find, _tab_signin = st.tabs(["🔎 Find my league", "🔑 Sign in"])
+        _tab_find, _tab_signin = st.tabs([":material/travel_explore: Find my league", ":material/login: Sign in"])
 
         with _tab_signin:
             if not auth_available():
@@ -2088,7 +2088,7 @@ with st.sidebar:
         [data-testid="stSidebar"] .st-key-nav_home button p{{ opacity:0; }}
         </style>
         """, unsafe_allow_html=True)
-    _home_label = "Dynasty FF Lil' Helper — Home" if _LOGO_HORIZONTAL else "🏠 Home"
+    _home_label = "Dynasty FF Lil' Helper — Home" if _LOGO_HORIZONTAL else "Home"
     if st.button(_home_label, width="stretch", key="nav_home"):
         st.session_state.nav_page = "🏠 League Overview"
         st.rerun()
@@ -2219,19 +2219,34 @@ else:
     league_def_avg     = st.session_state._league_def_avg
 
 # ── Sidebar navigation ────────────────────────────────────────────────────────
+# The page-key strings keep their original (emoji-prefixed) values so every
+# `page == "🏠 League Overview"` comparison and session_state.nav_page write
+# downstream keeps working untouched. We only swap the *display* via format_func:
+# strip the emoji and prepend a monochrome Material Symbols icon (inherits the
+# label's text color → green when active), replacing emoji-as-icons.
+_NAV_ICONS = {
+    "🏠 League Overview":        "home",
+    "📋 Rosters & Draft Picks":  "list_alt",
+    "🔍 Free Agents":            "person_search",
+    "📈 Trending":               "trending_up",
+    "📰 Fantasy News":           "newspaper",
+    "🔄 Trade Analyzer":         "swap_horiz",
+    "🌟 2026 Rookies":           "star",
+    "🏟️ Draft Room":             "dashboard",
+    "⚙️ Settings":               "settings",
+}
+
+
+def _nav_label(page_key: str) -> str:
+    """page key → ':material/icon: Sentence-case label' (emoji stripped)."""
+    name = page_key.split(" ", 1)[1] if " " in page_key else page_key
+    return f":material/{_NAV_ICONS.get(page_key, 'circle')}: {name}"
+
+
 with st.sidebar:
     st.divider()
-    page = st.radio("", [
-        "🏠 League Overview",
-        "📋 Rosters & Draft Picks",
-        "🔍 Free Agents",
-        "📈 Trending",
-        "📰 Fantasy News",
-        "🔄 Trade Analyzer",
-        "🌟 2026 Rookies",
-        "🏟️ Draft Room",
-        "⚙️ Settings",
-    ], label_visibility="collapsed", key="nav_page")
+    page = st.radio("", list(_NAV_ICONS.keys()), format_func=_nav_label,
+                    label_visibility="collapsed", key="nav_page")
 
 
 def _refresh_all_data():
@@ -2631,7 +2646,7 @@ elif page == "📋 Rosters & Draft Picks":
     # single dynamic active-value column is redundant — drop it.
     df_r = df_r.drop(columns=["Value"]).rename(columns={"_cons_avg": "Cons. Avg"})
 
-    st.header("👥 Players")
+    st.header(":material/groups: Players")
     col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
     _r_team_opts = sorted(df_r["Team"].unique().tolist())
     _r_default = st.session_state.get("_sticky_r_team")
@@ -2690,7 +2705,7 @@ elif page == "📋 Rosters & Draft Picks":
 
     # ── Player Tags (My Team) — its own section (future sub-menu) ─────────────
     st.divider()
-    st.header("🏷️ Player Tags")
+    st.header(":material/label: Player Tags")
     if not my_team:
         st.info("Set **My Team** in the sidebar to tag your players.")
     else:
@@ -2709,7 +2724,7 @@ elif page == "📋 Rosters & Draft Picks":
 
     # ════════ Draft Picks (merged in — will become a sub-menu) ═══════════════
     st.divider()
-    st.header("🎯 Draft Picks")
+    st.header(":material/sports_football: Draft Picks")
     df_p = build_picks_df(rosters, users, traded_ownership, drafts, slot_map, fc_picks)
 
     _curr_year   = str(datetime.now().year)
@@ -2793,7 +2808,7 @@ elif page == "🔍 Free Agents":
     else:
         df_fa = df_fa.drop(columns=["_cons_avg"])
 
-    st.header("🔍 League Current Free Agents")
+    st.header(":material/person_search: League Current Free Agents")
     col_a, col_b, col_c, col_d = st.columns([2, 2, 2, 3])
 
     sel_fa_pos    = col_a.multiselect("Positions", sorted(df_fa["Pos"].unique().tolist()), key="fa_pos",
@@ -2840,7 +2855,7 @@ elif page == "🔍 Free Agents":
 
     # ── Pickup & Drop Advisor ─────────────────────────────────────────────────
     st.divider()
-    st.subheader("🔄 Pickup & Drop Advisor")
+    st.subheader(":material/swap_vert: Pickup & Drop Advisor")
     st.caption("Select your team to see personalised free agent targets and roster trim candidates.")
 
     _adv_opts    = sorted(team_name_to_rid.keys())
@@ -2870,7 +2885,7 @@ elif page == "🔍 Free Agents":
         _n_teams     = len(team_data)
 
         # ── Positional need summary table ─────────────────────────────────────
-        st.markdown("#### 📊 Positional Needs")
+        st.markdown("#### :material/bar_chart: Positional Needs")
         _sorted_needs = sorted(_need_scores.items(), key=lambda x: x[1], reverse=True)
         _need_rows = []
         for _pos, _score in _sorted_needs:
@@ -2891,7 +2906,7 @@ elif page == "🔍 Free Agents":
         st.divider()
 
         # ── Recommended pickups — tabbed by top 2 needs + Best Available ──────
-        st.markdown("#### 🎯 Recommended Pickups")
+        st.markdown("#### :material/recommend: Recommended Pickups")
         _top_need_positions = [p for p, _ in _sorted_needs[:2]]
         _tab_labels = [f"📍 {p} (Need: {_need_scores[p]:.0f})" for p in _top_need_positions] + ["⭐ Best Available"]
         _pickup_tabs = st.tabs(_tab_labels)
@@ -2949,7 +2964,7 @@ elif page == "🔍 Free Agents":
         st.divider()
 
         # ── Drop candidates ───────────────────────────────────────────────────
-        st.markdown("#### ✂️ Drop Candidates *(if you need a roster spot)*")
+        st.markdown("#### :material/content_cut: Drop Candidates *(if you need a roster spot)*")
         st.caption("Rostered players ranked by drop priority — weighs value vs positional average, recent points, injury status, experience, and **Sleeper league-wide drops**.")
 
         _, _fa_drops = load_trending()
@@ -3114,7 +3129,7 @@ elif page == "⚙️ Settings":
 
     # ════════ Scoring Rules (merged in — will become a sub-menu) ═════════════
     st.divider()
-    st.header("📊 Scoring Rules")
+    st.header(":material/rule: Scoring Rules")
     df_sc = build_scoring_df(scoring)
     _sc1, _sc2 = st.columns([2, 3])
     sel_cats  = _sc1.multiselect("Categories", sorted(df_sc["Category"].unique().tolist()), key="sc_cat",
@@ -3377,7 +3392,7 @@ elif page == "🔄 Trade Analyzer":
         st.divider()
 
         # ── Best Trade Partners ───────────────────────────────────────────────────
-        st.subheader("🤝 Best Trade Partners")
+        st.subheader(":material/handshake: Best Trade Partners")
         st.caption(
             "Ranked by mutual trade fit: how much they have what you need (40%) + "
             "how much they need what you have (40%) + value proximity (20%). "
