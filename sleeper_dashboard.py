@@ -96,11 +96,12 @@ def inject_theme():
     with .streamlit/config.toml and the Python TOKENS dict above."""
     st.markdown("""
 <style>
-/* Fonts via @import INSIDE the <style> block (not a <link> tag): Streamlit's
-   markdown treats a raw-HTML block starting with <style> as CommonMark type-1
-   (runs to </style>, blank lines OK), but a block starting with <link> as
-   type-6, which ends at the first blank line — that would spill the rest of
-   this CSS onto the page as literal text. Keep the @import here. */
+/* Load fonts with @import here, NOT a link tag before this block. Streamlit's
+   CommonMark markdown keeps a raw-HTML block that opens with a style tag intact
+   to its closing tag (blank lines and all); a block opening with a link tag
+   instead ends at the first blank line and spills the rest of this CSS onto the
+   page as text. Also: never write the literal closing style tag in a comment
+   here, or the block ends early and leaks the same way. */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 /* ── Design tokens — single source of truth (CSS side) ──────────────────────── */
 :root{
