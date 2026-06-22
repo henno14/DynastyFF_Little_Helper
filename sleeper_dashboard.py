@@ -628,50 +628,66 @@ def fetch_dp_values(num_qbs=2):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def build_ktc_sleeper_map(ktc_by_ktcid, cw_ktc_to_sid, players):
-    """Map KTC data to Sleeper player IDs.
-    Strategy (in order):
-      1. Name match: build a KTC name→data lookup, then scan the Sleeper players dict.
-         This covers ~490 of ~500 KTC players and is the most reliable method.
-      2. Crosswalk supplement: use dynastyprocess ktc_id→sleeper_id for any remaining gaps.
-    """
-    # Build name→data lookup from KTC (lower-case, suffix-stripped)
-    ktc_by_name    = {}
-    ktc_by_name_lc = {}
-    for kid, d in ktc_by_ktcid.items():
-        name = (d.get("name") or "").strip()
-        if not name:
-            continue
-        ktc_by_name[name] = d
-        ktc_by_name_lc[name.lower()] = d
+def _ktc_norm_name(s):
+    """Lower-case, strip a trailing generational suffix (Jr./Sr./II–IV)."""
+    s = (s or "").strip().lower()
+    return re.sub(r'\s+(jr\.?|sr\.?|ii|iii|iv)$', '', s).strip()
 
-    result = {}
-    # KTC ranks offensive skill players only. Name-matching a DEFENDER/K with the same
-    # name as a skill star (e.g. LB "Justin Jefferson" vs WR "Justin Jefferson") would
-    # hand the defender the star's value — so restrict Pass 1 to skill positions.
+
+def build_ktc_sleeper_map(ktc_by_ktcid, cw_ktc_to_sid, players):
+    """Map KTC data to Sleeper player IDs, keyed by Sleeper id.
+    Strategy (in order — the crosswalk is trusted FIRST so same-name players resolve
+    to the right person):
+      1. ID crosswalk (authoritative): dynastyprocess ktc_id→sleeper_id maps each KTC
+         player to the exact Sleeper id (~90% coverage).
+      2. Name fallback for the KTC players the crosswalk missed — matched against
+         Sleeper SKILL players only, skipping ids already claimed in pass 1, and (when
+         several Sleeper players share a name) preferring the one whose position matches
+         KTC's, is active, and is on an NFL team. This stops a retired/practice-squad
+         namesake — or a defender sharing a star's name — from inheriting the value.
+    """
     _KTC_SKILL = {"QB", "RB", "WR", "TE"}
-    # Pass 1 — name matching against Sleeper players dict (skill positions only)
+
+    result, claimed = {}, set()
+    # Pass 1 — authoritative ID crosswalk
+    for kid, d in ktc_by_ktcid.items():
+        sid = cw_ktc_to_sid.get(str(kid))
+        if sid:
+            result[sid] = d
+            claimed.add(sid)
+
+    # Index Sleeper SKILL players by normalised name
+    sleeper_by_name = {}
     for pid, p in players.items():
         if (p.get("position") or "") not in _KTC_SKILL:
             continue
-        name = player_name(p)
-        if not name:
-            continue
-        if name in ktc_by_name:
-            result[pid] = ktc_by_name[name]
-        elif name.lower() in ktc_by_name_lc:
-            result[pid] = ktc_by_name_lc[name.lower()]
-        else:
-            # Strip common suffixes (Jr., Sr., II, III, IV)
-            base = re.sub(r'\s+(Jr\.?|Sr\.?|II|III|IV)$', '', name, flags=re.IGNORECASE).strip()
-            if base.lower() in ktc_by_name_lc:
-                result[pid] = ktc_by_name_lc[base.lower()]
+        nm = _ktc_norm_name(player_name(p))
+        if nm:
+            sleeper_by_name.setdefault(nm, []).append((pid, p))
 
-    # Pass 2 — crosswalk supplement for any KTC player still unmapped
+    def _best(cands, ktc_pos):
+        # Rank candidates: KTC-position match (when KTC carries pos) → active → on-team.
+        return sorted(
+            cands,
+            key=lambda it: (
+                1 if (ktc_pos and it[1].get("position") == ktc_pos) else 0,
+                1 if it[1].get("active") else 0,
+                1 if it[1].get("team") else 0,
+            ),
+            reverse=True,
+        )[0]
+
+    # Pass 2 — name fallback for KTC players not covered by the crosswalk
     for kid, d in ktc_by_ktcid.items():
-        sid = cw_ktc_to_sid.get(str(kid))
-        if sid and sid not in result:
-            result[sid] = d
+        if cw_ktc_to_sid.get(str(kid)):
+            continue                                   # already mapped authoritatively
+        cands = [c for c in sleeper_by_name.get(_ktc_norm_name(d.get("name")), [])
+                 if c[0] not in claimed]
+        if not cands:
+            continue
+        best_pid = _best(cands, d.get("pos"))[0]
+        result[best_pid] = d
+        claimed.add(best_pid)
 
     return result
 
