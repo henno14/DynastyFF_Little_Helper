@@ -110,14 +110,20 @@ def build_team_facts(*, team: str, teams_in_league: int, power_rank: int,
                      positions: dict[str, int], season_rank: int, dynasty_rank: int,
                      roster_value: int | None = None, avg_age: float | None = None,
                      value_source: str | None = None,
-                     value_change_pct_7d: float | None = None) -> dict:
+                     value_change_pct_7d: float | None = None,
+                     priority_need: str | None = None) -> dict:
     """Assemble the fact object from values the app already computes, and derive
     the rule-based labels. `positions` maps QB/RB/WR/TE (+ picks/DEF) -> league rank.
-    No numbers are computed beyond min/derivation of strongest/weakest + labels."""
+    `priority_need`, when given, is the app's computed need position (need_scores) —
+    used as the 'biggest hole' so the Bottom Line never disagrees with the Priority
+    Need tile. No numbers are computed beyond min/derivation + labels."""
     n = teams_in_league
     skill = [p for p in ("QB", "RB", "WR", "TE") if p in positions]
     ranked = sorted(skill, key=lambda p: positions[p])
     strongest, weakest = ranked[0], ranked[-1]
+    # Align the "biggest hole" with the app's priority-need computation when supplied
+    if priority_need and priority_need in positions:
+        weakest = priority_need
     s_status = season_status(season_rank, n)
     d_status = dynasty_status(dynasty_rank, n)
 
