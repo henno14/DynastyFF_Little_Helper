@@ -646,8 +646,14 @@ def build_ktc_sleeper_map(ktc_by_ktcid, cw_ktc_to_sid, players):
         ktc_by_name_lc[name.lower()] = d
 
     result = {}
-    # Pass 1 — name matching against Sleeper players dict
+    # KTC ranks offensive skill players only. Name-matching a DEFENDER/K with the same
+    # name as a skill star (e.g. LB "Justin Jefferson" vs WR "Justin Jefferson") would
+    # hand the defender the star's value — so restrict Pass 1 to skill positions.
+    _KTC_SKILL = {"QB", "RB", "WR", "TE"}
+    # Pass 1 — name matching against Sleeper players dict (skill positions only)
     for pid, p in players.items():
+        if (p.get("position") or "") not in _KTC_SKILL:
+            continue
         name = player_name(p)
         if not name:
             continue
@@ -1898,6 +1904,8 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
         df_fa = df_fa.rename(columns={"Value": val_col})
         if _excl_rookies_add and "Exp" in df_fa.columns:
             df_fa = df_fa[df_fa["Exp"] != "Rookie"]
+        # Adds fill skill needs — never suggest IDP/DEF/K free agents here.
+        df_fa = df_fa[df_fa["Pos"].isin(SKILL_POSITIONS)]
         fa_sorted = df_fa.sort_values(val_col, ascending=False, na_position="last")
         need_pos = [p for p, _ in sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])]
         picks_rows, seen = [], set()
