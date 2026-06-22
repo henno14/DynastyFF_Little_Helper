@@ -273,10 +273,10 @@ def save_favorites(favs):
 # ── Player status tags (Untouchable / Keep / Trade / Cut) — per league ────────
 TAG_OPTIONS = ["", "Untouchable", "Keep", "Trade", "Cut"]
 TAG_DISPLAY = {
-    "Untouchable": "🔒 Untouchable",
-    "Keep":        "✅ Keep",
-    "Trade":       "🔄 Trade Block",
-    "Cut":         "✂️ Cut",
+    "Untouchable": "Untouchable",
+    "Keep":        "Keep",
+    "Trade":       "Trade Block",
+    "Cut":         "Cut",
 }
 
 def load_player_tags(league_id):
@@ -858,9 +858,9 @@ COL_CFG = {
 
 
 def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
-    """Render a grid with a clickable ⭐ favourites column (first column).
+    """Render a grid with a clickable Fav favourites column (first column).
     Favourites are keyed by player display name, shared across all grids,
-    and persisted to favorites.json. Only the ⭐ column is editable.
+    and persisted to favorites.json. Only the Fav column is editable.
     styler_fn: optional fn(df) -> Styler for row highlighting (applies to
     non-editable columns only, per st.data_editor behaviour)."""
     favs = st.session_state.favorites
@@ -869,9 +869,9 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
         st.info("No players match your filters. Try clearing the search or changing position.")
         return
     dv = dash_na(dv)   # object-column None/NaN → '—' (no literal 'None')
-    dv.insert(0, "⭐", dv[name_col].map(lambda n: n in favs))
-    cfg = {**(col_cfg or {}), "⭐": st.column_config.CheckboxColumn("⭐", default=False)}
-    disabled = [c for c in dv.columns if c != "⭐"]
+    dv.insert(0, "Fav", dv[name_col].map(lambda n: n in favs))
+    cfg = {**(col_cfg or {}), "Fav": st.column_config.CheckboxColumn("Fav", default=False)}
+    disabled = [c for c in dv.columns if c != "Fav"]
     data = styler_fn(dv) if styler_fn else dv
     # Wrap in a form so ticking stars batches into ONE save (no per-cell full-page
     # rerun / "jump"). Fixed height stops the grid reflowing the page. Versioned key
@@ -887,7 +887,7 @@ def fav_grid(dv, name_col, editor_key, col_cfg=None, styler_fn=None):
     if _submitted:
         new_favs = set(favs)
         for _, row in edited.iterrows():
-            if row["⭐"]:
+            if row["Fav"]:
                 new_favs.add(row[name_col])
             else:
                 new_favs.discard(row[name_col])
@@ -926,8 +926,8 @@ def tag_editor(roster_players, editor_key):
                 "Value":  COL_CFG["Value"],
                 "Status": st.column_config.SelectboxColumn(
                     "Status", options=TAG_OPTIONS, default="",
-                    help="🔒 Untouchable = never suggested in trades · ✅ Keep · "
-                         "🔄 Trade Block = actively shopping · ✂️ Cut candidate",
+                    help="Untouchable = never suggested in trades · Keep · "
+                         "Trade Block = actively shopping · Cut candidate",
                 ),
             },
             disabled=["Player", "Pos", "Value"],
@@ -949,7 +949,7 @@ def tag_editor(roster_players, editor_key):
             _counts = {}
             for _v in new_tags.values():
                 _counts[_v] = _counts.get(_v, 0) + 1
-            _summary = ", ".join(f"{_n} {TAG_DISPLAY.get(_k, _k).split(' ', 1)[-1]}"
+            _summary = ", ".join(f"{_n} {TAG_DISPLAY.get(_k, _k)}"
                                  for _k, _n in _counts.items()) or "none"
             st.session_state._toast_msg = f"Tags saved · {_summary}"
             st.rerun()
@@ -1558,13 +1558,13 @@ def player_drop_score(value, pts, status, exp, pos_avg, trend_drops=0, tagged_cu
     trend_score = min((trend_drops or 0) / 5000.0, 1.0)  * 25   # mass-dropped across Sleeper
     score = val_score + pts_score + inj_score + age_score + trend_score
     reasons = []
-    if tagged_cut:                               score += 1000; reasons.append("✂️ Tagged Cut")
+    if tagged_cut:                               score += 1000; reasons.append("Tagged Cut")
     if (value or 0) < pos_avg * 0.5:             reasons.append("Low value")
     if (pts or 0) < 50:                          reasons.append("Low pts")
     if status in ("Out", "IR", "PUP"):           reasons.append(status)
     elif status in ("Questionable", "Doubtful"): reasons.append(status)
     if (exp or 0) >= 7:                          reasons.append(f"{exp}yr vet")
-    if (trend_drops or 0) >= 500:                reasons.append(f"📉 {int(trend_drops):,} Sleeper drops")
+    if (trend_drops or 0) >= 500:                reasons.append(f"{int(trend_drops):,} Sleeper drops")
     return score, reasons
 
 
@@ -1808,14 +1808,14 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
 
     p1, p2 = st.columns(2)
     with p1:
-        st.markdown("**✂️ Consider cutting**")
+        st.markdown("**Consider cutting**")
         if cuts3:
             st.dataframe(pd.DataFrame(cuts3), hide_index=True, width="stretch",
                          column_config={val_col: COL_CFG["Value"]})
         else:
             st.caption("Roster looks lean.")
     with p2:
-        st.markdown("**🎯 Consider adding** *(free agents)*")
+        st.markdown("**Consider adding** *(free agents)*")
         if picks_rows:
             _cols = [c for c in ["Player", "Pos", "NFL Team", val_col] if c in df_fa.columns]
             st.dataframe(pd.DataFrame(picks_rows)[_cols], hide_index=True, width="stretch",
@@ -1823,7 +1823,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
         else:
             st.caption("No standout free agents available.")
     st.caption("Cuts weigh value vs positional average, production, injury, age — and "
-               "**Sleeper league-wide drops** (📉 = many managers dropping this player).")
+               "**Sleeper league-wide drops** (a high drop count = many managers dropping this player).")
 
 
 # ── Fantasy News ─────────────────────────────────────────────────────────────
@@ -1890,7 +1890,7 @@ def fetch_sleeper_player_news(players_data):
         name = player_name(p, fallback=pid)
         items.append({
             "source":    "Sleeper Transactions",
-            "title":     f"📈 {name} trending up — {entry['count']:,} adds in last 24h",
+            "title":     f"{name} trending up — {entry['count']:,} adds in last 24h",
             "summary":   (
                 f"{name} ({p.get('position','?')} · {p.get('team','FA')}) "
                 f"is being added in {entry['count']:,} leagues. "
@@ -1906,7 +1906,7 @@ def fetch_sleeper_player_news(players_data):
         name = player_name(p, fallback=pid)
         items.append({
             "source":    "Sleeper Transactions",
-            "title":     f"📉 {name} trending down — {entry['count']:,} drops in last 24h",
+            "title":     f"{name} trending down — {entry['count']:,} drops in last 24h",
             "summary":   (
                 f"{name} ({p.get('position','?')} · {p.get('team','FA')}) "
                 f"is being dropped in {entry['count']:,} leagues. "
@@ -1937,26 +1937,28 @@ if "league_id" not in st.session_state:
     st.session_state.league_id = None   # login-first: always start at the entry screen
 
 if not st.session_state.get("league_id"):
-    # Centre + constrain the entry form so it reads like an intentional login card
+    # Centre + constrain the entry form so it reads like an intentional login card.
+    # Inside the card every block — logo, subtitle, the Find/Sign-in tabs, the label
+    # and the input — shares one left edge for a clean alignment grid.
     _el, _ec, _er = st.columns([1, 1.4, 1])
     with _ec:
         if _LOGO_HORIZONTAL:
             st.markdown(
-                f'<div style="display:flex; justify-content:center; margin:0.5rem 0 0.25rem;">'
-                f'<div style="width:min(440px,80%);">{_LOGO_HORIZONTAL}</div></div>',
+                f'<div style="margin:0.5rem 0 0.5rem;">'
+                f'<div style="width:min(360px,90%);">{_LOGO_HORIZONTAL}</div></div>',
                 unsafe_allow_html=True,
             )
         else:
             st.title("Dynasty FF Lil' Helper")
         st.markdown(
-            '<p style="text-align:center; color:#9aa4b2; max-width:620px; margin:0 auto 0.5rem;">'
+            '<p style="text-align:left; color:var(--text-mid); max-width:620px; margin:0 0 1rem;">'
             "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
             "in one, plus trade analysis, draft tools, and a free-agent advisor.</p>",
             unsafe_allow_html=True,
         )
         # Signed in but no saved league yet (first sign-in) → guide them to pick one
         if st.session_state.get("auth_email"):
-            st.success(f"✅ Signed in as **{st.session_state.auth_email}** — pick your league below "
+            st.success(f"Signed in as **{st.session_state.auth_email}** — pick your league below "
                        "to get started (your settings will save automatically from now on).")
         _tab_find, _tab_signin = st.tabs([":material/travel_explore: Find my league", ":material/login: Sign in"])
 
@@ -2081,39 +2083,46 @@ if st.session_state.get("_onboarded_for") != league_id:
              or _umap0.get(r.get("owner_id") or "", {}).get("display_name")
              or f"Team {r['roster_id']}") for r in rosters
         })
-        # Centre + constrain so it matches the login card and reads intentionally
-        _su_l, _su_c, _su_r = st.columns([1, 1.6, 1])
-        with _su_c:
-            render_league_header(league, name_size="1.7rem")
-            render_league_badges(league)
-            st.caption("Quick setup — you can change either of these anytime from the sidebar.")
-            # st.form batches the dropdowns: picking a team / value source no longer
-            # triggers a rerun on every change — nothing saves until "Continue".
-            with st.form("setup_form", border=False):
-                _setup_team = st.selectbox("Which team is yours?", ["—"] + _teams0, key="setup_team")
-                _setup_vs = st.selectbox(
-                    "Value source", available_value_sources(num_qbs, owner_view),
-                    key="setup_vs", format_func=vs_label,
-                    help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
-                         "win-now/seasonal lens — pick it for redraft or brand-new leagues.",
-                )
-                st.caption(
-                    "**Value source** sets which dynasty ranking powers every player's value & "
-                    "rank across the app. You can switch it anytime from the sidebar."
-                )
-                _setup_rd = redraft_note(_setup_vs)
-                if _setup_rd:
-                    st.caption("ℹ️ " + _setup_rd)
-                _setup_go = st.form_submit_button("Continue →", type="primary")
-            if _setup_go:
-                save_league_prefs(league_id, value_source=_setup_vs,
-                                  team=(_setup_team if _setup_team != "—" else None))
-                st.session_state.pop("_prefs_seeded_for", None)   # sidebar re-seeds from these
-                st.session_state._onboarded_for = league_id
-                st.rerun()
-            if st.button("Switch league", key="setup_switch"):
-                st.session_state.league_id = None
-                st.rerun()
+        # Centre + constrain so it matches the login card and reads intentionally.
+        # The whole card lives in ONE st.empty() slot so Streamlit manages it as a
+        # single delta — this kills the duplicate "icon + field" render that showed
+        # when the previous run's elements weren't fully overwritten, and we clear
+        # the slot explicitly before the Continue rerun.
+        _setup_ph = st.empty()
+        with _setup_ph.container():
+            _su_l, _su_c, _su_r = st.columns([1, 1.6, 1])
+            with _su_c:
+                render_league_header(league, name_size="1.7rem")
+                render_league_badges(league)
+                st.caption("Quick setup — you can change either of these anytime from the sidebar.")
+                # st.form batches the dropdowns: picking a team / value source no longer
+                # triggers a rerun on every change — nothing saves until "Continue".
+                with st.form("setup_form", border=False):
+                    _setup_team = st.selectbox("Choose Team you want to View", ["—"] + _teams0, key="setup_team")
+                    _setup_vs = st.selectbox(
+                        "Value source to use", available_value_sources(num_qbs, owner_view),
+                        key="setup_vs", format_func=vs_label,
+                        help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
+                             "win-now/seasonal lens — pick it for redraft or brand-new leagues.",
+                    )
+                    st.caption(
+                        "**Value source** sets which dynasty ranking powers every player's value & "
+                        "rank across the app. You can switch it anytime from the sidebar."
+                    )
+                    _setup_rd = redraft_note(_setup_vs)
+                    if _setup_rd:
+                        st.caption(_setup_rd)
+                    _setup_go = st.form_submit_button("Continue", type="primary")
+                if _setup_go:
+                    _setup_ph.empty()   # clear the card before the rerun so nothing lingers
+                    save_league_prefs(league_id, value_source=_setup_vs,
+                                      team=(_setup_team if _setup_team != "—" else None))
+                    st.session_state.pop("_prefs_seeded_for", None)   # sidebar re-seeds from these
+                    st.session_state._onboarded_for = league_id
+                    st.rerun()
+                if st.button("Switch league", key="setup_switch"):
+                    st.session_state.league_id = None
+                    st.rerun()
         st.stop()
 
 # Initialise session-state defaults once (must happen before any widget with these keys)
@@ -2175,7 +2184,7 @@ with st.sidebar:
     # ── Account: optional email sign-in (saves settings across devices) ───────
     if auth_available():
         if st.session_state.get("auth_email"):
-            st.caption(f"✅ Signed in · {st.session_state.auth_email}")
+            st.caption(f"Signed in · {st.session_state.auth_email}")
             if st.button("Sign out", width="stretch", key="auth_signout"):
                 for _k in ("auth_email", "_auth_code_sent", "_auth_pending_email", "_onboarded_for"):
                     st.session_state.pop(_k, None)
@@ -2183,7 +2192,7 @@ with st.sidebar:
                 st.session_state.nav_page   = "🏠 League Overview"  # land on Overview next time
                 st.rerun()
         else:
-            with st.expander("🔑 Sign in to save", expanded=False):
+            with st.expander("Sign in to save", expanded=False):
                 if not st.session_state.get("_auth_code_sent"):
                     _ae = st.text_input("Email", key="auth_email_input", placeholder="you@email.com")
                     if st.button("Send code", width="stretch", key="auth_send"):
@@ -2231,7 +2240,7 @@ with st.sidebar:
             st.session_state.pop(_sk, None)
         st.session_state.pop("_last_my_team", None)
         st.session_state.pop("_last_value_source", None)
-    _my_team_sel = st.selectbox("My Team", _team_opts, key="my_team_pick")
+    _my_team_sel = st.selectbox("Choose Team you want to View", _team_opts, key="my_team_pick")
     my_team = None if _my_team_sel == "—" else _my_team_sel
     if st.session_state.get("_last_my_team", "__unset__") != my_team:
         save_league_prefs(league_id, team=my_team)
@@ -2247,14 +2256,14 @@ with st.sidebar:
     _vs_options_sb = available_value_sources(num_qbs, owner_view)
     if st.session_state.get("value_source") not in _vs_options_sb:
         st.session_state.value_source = "FC Dynasty"
-    st.selectbox("Value Source", _vs_options_sb, key="value_source", format_func=vs_label,
+    st.selectbox("Value source to use", _vs_options_sb, key="value_source", format_func=vs_label,
                  help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
                       "win-now/seasonal lens — pick it for redraft or brand-new leagues.")
     _rd_note = redraft_note(st.session_state.value_source)
     if _rd_note:
-        st.caption("ℹ️ " + _rd_note)
+        st.caption(_rd_note)
     if owner_view and num_qbs < 2:
-        st.caption("ℹ️ Owner view: KeepTradeCut & DynastyNerds are SuperFlex-only — hidden for this 1-QB league.")
+        st.caption("Owner view: KeepTradeCut & DynastyNerds are SuperFlex-only — hidden for this 1-QB league.")
     if st.session_state.get("_last_value_source") != st.session_state.value_source:
         save_league_prefs(league_id, value_source=st.session_state.value_source)
         st.session_state._last_value_source = st.session_state.value_source
@@ -2344,7 +2353,7 @@ def _refresh_all_data():
 
 # Flush any pending save confirmation (set before a st.rerun on the previous run)
 if st.session_state.get("_toast_msg"):
-    st.toast(st.session_state.pop("_toast_msg"), icon="💾")
+    st.toast(st.session_state.pop("_toast_msg"), icon=":material/save:")
 
 # ── Page: League Overview ─────────────────────────────────────────────────────
 if page == "🏠 League Overview":
@@ -2605,7 +2614,7 @@ if page == "🏠 League Overview":
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(fig_radar, width="stretch")
+            st.plotly_chart(fig_radar, use_container_width=True)
 
         # ── Chart B: Roster Value Stacked Bar ────────────────────────────────────
         with st.container():
@@ -2662,7 +2671,7 @@ if page == "🏠 League Overview":
                 plot_bgcolor="rgba(0,0,0,0)",
             )
             st.caption("#N inside each segment = that team's league rank at the position (by avg value).")
-            st.plotly_chart(fig_bar, width="stretch")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
         # ── Chart C: Rebuild vs Contend Scatter ───────────────────────────────────
         with st.container():
@@ -2753,9 +2762,9 @@ if page == "🏠 League Overview":
                     xaxis=dict(range=[min_age - _xr * 0.15, max_age + _xr * 0.15]),
                     yaxis=dict(range=[min_val - _yr * 0.18, max_val + _yr * 0.18]),
                 )
-                st.plotly_chart(fig_scatter, width="stretch")
+                st.plotly_chart(fig_scatter, use_container_width=True)
                 if my_team:
-                    st.caption(f"⭐ Gold dot = {my_team}")
+                    st.caption(f"Gold dot = {my_team}")
             else:
                 st.info("Not enough roster age data to generate scatter chart.")
 
@@ -2783,7 +2792,7 @@ elif page == "📋 Rosters & Draft Picks":
     sel_slots = col_c.multiselect("Slot",      ["Starter", "Bench", "Taxi"],            key="r_slot",
                                   placeholder="All slots")
     name_srch = col_d.text_input("Search player name", key="r_name", placeholder="e.g. Ja'Marr Chase")
-    r_fav_only = st.checkbox("⭐ Favourites only", key="r_fav_only")
+    r_fav_only = st.checkbox("Favourites only", key="r_fav_only")
 
     mask = pd.Series(True, index=df_r.index)
     if sel_teams: mask &= df_r["Team"].isin(sel_teams)
@@ -2823,7 +2832,7 @@ elif page == "📋 Rosters & Draft Picks":
     ).reset_index(drop=True)
 
     fav_grid(dv[display_cols], "Player", "r_fav_grid", col_cfg=col_cfg)
-    st.caption(f"{plural(len(dv), 'player')} shown · all sources normalised to 0–10K · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(dv), 'player')} shown · all sources normalised to 0–10K · tick the Fav box to favourite")
 
     # ── Player Tags (My Team) — its own section (future sub-menu) ─────────────
     st.divider()
@@ -2840,8 +2849,8 @@ elif page == "📋 Rosters & Draft Picks":
         _my_players.sort(key=lambda x: x["value"] or 0, reverse=True)
         _r_block = [p for p in _my_players if st.session_state.player_tags.get(p["name"]) == "Trade"]
         if _r_block:
-            st.markdown("**🔄 Your Trade Block:** " + " · ".join(f"{p['name']} ({p['pos']})" for p in _r_block))
-        st.caption(f"Tagging **{my_team.strip()}** · 🔒 Untouchable players are never suggested in trades · shared with Trade Analyzer")
+            st.markdown("**Your Trade Block:** " + " · ".join(f"{p['name']} ({p['pos']})" for p in _r_block))
+        st.caption(f"Tagging **{my_team.strip()}** · Untouchable players are never suggested in trades · shared with Trade Analyzer")
         tag_editor(_my_players, "tags_rosters")
 
     # ════════ Draft Picks (merged in — will become a sub-menu) ═══════════════
@@ -2874,9 +2883,9 @@ elif page == "📋 Rosters & Draft Picks":
         _td  = team_data.get(_rid, {})
         rel  = _td.get("relative", {}).get("PICK")
         if rel is None: return "—"
-        if rel >= 10:  return "🟢 Surplus"
-        if rel <= -10: return "🔴 Deficit"
-        return "🟡 Average"
+        if rel >= 10:  return "Surplus"
+        if rel <= -10: return "Deficit"
+        return "Average"
 
     def _team_biggest_need(team_name):
         _rid = team_name_to_rid.get(team_name)
@@ -2915,8 +2924,8 @@ elif page == "📋 Rosters & Draft Picks":
             dv, width="stretch", hide_index=True,
             column_config={"Value": COL_CFG["Value"]},
         )
-    _hl_note = f" · ⭐ highlighted = {my_team}" if my_team and (dv["Team"] == my_team).any() else ""
-    st.caption(f"{plural(len(dv), 'pick')} shown · 🟢 Surplus = pick-rich · 🟡 Average · 🔴 Deficit = pick-poor{_hl_note}")
+    _hl_note = f" · highlighted = {my_team}" if my_team and (dv["Team"] == my_team).any() else ""
+    st.caption(f"{plural(len(dv), 'pick')} shown · Surplus = pick-rich · Average · Deficit = pick-poor{_hl_note}")
 
 # ── Page: Free Agents ────────────────────────────────────────────────────────
 elif page == "🔍 Free Agents":
@@ -2937,7 +2946,7 @@ elif page == "🔍 Free Agents":
                                       placeholder="All positions")
     col_b.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
     incl_rookies  = col_b.checkbox("Include Rookies", value=False, key="fa_rookies")
-    fa_fav_only   = col_b.checkbox("⭐ Favourites only", key="fa_fav_only")
+    fa_fav_only   = col_b.checkbox("Favourites only", key="fa_fav_only")
     min_val       = col_c.number_input("Min Value", min_value=0, value=0, step=100, key="fa_min",
                                        help="0 shows every unrostered player. Raise to hide deep-bench noise.")
     fa_srch       = col_d.text_input("Search player name", key="fa_name", placeholder="e.g. Austin Ekeler")
@@ -2973,7 +2982,7 @@ elif page == "🔍 Free Agents":
     }
 
     fav_grid(dv[fa_display_cols], "Player", "fa_fav_grid", col_cfg=fa_col_cfg)
-    st.caption(f"{plural(len(dv), 'free agent')} shown · sorted by {value_source} value (best first) · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(dv), 'free agent')} shown · sorted by {value_source} value (best first) · tick the Fav box to favourite")
 
     # ── Pickup & Drop Advisor ─────────────────────────────────────────────────
     st.divider()
@@ -3030,7 +3039,7 @@ elif page == "🔍 Free Agents":
         # ── Recommended pickups — tabbed by top 2 needs + Best Available ──────
         st.markdown("#### :material/recommend: Recommended Pickups")
         _top_need_positions = [p for p, _ in _sorted_needs[:2]]
-        _tab_labels = [f"📍 {p} (Need: {_need_scores[p]:.0f})" for p in _top_need_positions] + ["⭐ Best Available"]
+        _tab_labels = [f"{p} (Need: {_need_scores[p]:.0f})" for p in _top_need_positions] + ["Best Available"]
         _pickup_tabs = st.tabs(_tab_labels)
 
         # Helper: columns to show in pickup tables
@@ -3121,7 +3130,7 @@ elif page == "🔍 Free Agents":
         _drop_rows.sort(key=lambda x: x["_score"], reverse=True)
 
         # Auto-tag genuine drop candidates (score ≥ 50: clearly below positional value
-        # AND low production) as ✂️ Cut — but only for YOUR team, once per session, and
+        # AND low production) as Cut — but only for YOUR team, once per session, and
         # never overwriting a tag you've set or cleared yourself.
         _auto_cut_n = 0
         if my_team and _adv_team == my_team:
@@ -3154,9 +3163,9 @@ elif page == "🔍 Free Agents":
                 },
             )
             if my_team and _adv_team == my_team:
-                _cut_note = (f" · auto-tagged {plural(_auto_cut_n, 'player')} ✂️ Cut this session"
+                _cut_note = (f" · auto-tagged {plural(_auto_cut_n, 'player')} Cut this session"
                              if _auto_cut_n else "")
-                st.caption("Strong drop candidates are auto-tagged ✂️ Cut on your roster — "
+                st.caption("Strong drop candidates are auto-tagged Cut on your roster — "
                            f"edit anytime on Rosters / Trade Analyzer; your changes are kept.{_cut_note}")
 
 # ── Page: 2026 Rookies ───────────────────────────────────────────────────────
@@ -3170,7 +3179,7 @@ elif page == "🌟 2026 Rookies":
     sel_rk_rost = col_b.selectbox("Roster Status",  ["All", "On Roster", "Not Rostered"],   key="rk_rost")
     rk_srch     = col_c.text_input("Search player name", key="rk_name", placeholder="e.g. Ashton Jeanty")
     col_d.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
-    rk_fav_only = col_d.checkbox("⭐ Only", key="rk_fav_only")
+    rk_fav_only = col_d.checkbox("Only", key="rk_fav_only")
 
     mask = pd.Series(True, index=df_rk.index)
     if sel_rk_pos:                      mask &= df_rk["Pos"].isin(sel_rk_pos)
@@ -3182,13 +3191,13 @@ elif page == "🌟 2026 Rookies":
 
     fav_grid(dv, "Player", "rk_fav_grid",
              col_cfg={val_col: COL_CFG["Value"], "Overall Rank": COL_CFG["Rank"]})
-    st.caption(f"{plural(len(dv), 'rookie')} shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(dv), 'rookie')} shown (sorted by rookie value) · \"Overall Rank\" = dynasty rank across all players · Value source: **{value_source}** · tick the Fav box to favourite")
 
 # ── Page: Settings (includes Scoring Rules section) ──────────────────────────
 elif page == "⚙️ Settings":
     st.title("Settings")
     if _signed_in():
-        st.caption(f"✅ Signed in as **{st.session_state.auth_email}** — your team, value source, favourites and tags are saved to your account.")
+        st.caption(f"Signed in as **{st.session_state.auth_email}** — your team, value source, favourites and tags are saved to your account.")
     else:
         st.caption("Browsing as a guest — settings last for this session. **Sign in** (sidebar) to save them to your account.")
 
@@ -3203,12 +3212,12 @@ elif page == "⚙️ Settings":
         unsafe_allow_html=True,
     )
     _dc2.markdown('<div style="padding-top:0.5rem;"></div>', unsafe_allow_html=True)
-    if _dc2.button("🔄 Refresh data", width="stretch",
+    if _dc2.button("Refresh data", width="stretch",
                    help="Re-fetch all values, stats and news from the sources"):
         _refresh_all_data()
         st.rerun()
     _dc3.markdown('<div style="padding-top:0.5rem;"></div>', unsafe_allow_html=True)
-    if _dc3.button("🔁 Switch league", width="stretch"):
+    if _dc3.button("Switch league", width="stretch"):
         st.session_state.league_id = None
         st.rerun()
     st.divider()
@@ -3238,7 +3247,7 @@ elif page == "⚙️ Settings":
 
     with col_s2:
         st.subheader("Theme")
-        st.info("🌙 **Dark theme** — Dynasty FF Lil' Helper is dark-only for now. A polished light theme is on the roadmap.")
+        st.info("**Dark theme** — Dynasty FF Lil' Helper is dark-only for now. A polished light theme is on the roadmap.")
 
     st.divider()
     st.subheader("Draft Room")
@@ -3303,7 +3312,7 @@ elif page == "📈 Trending":
             lambda row: [_tr_hl if row["Dynasty Team"] == my_team else "" for _ in row], axis=1
         )
         st.dataframe(_tr_styled, width="stretch", hide_index=True, column_config=_tr_col_cfg)
-        _tr_note = f" · ⭐ highlighted = {my_team}"
+        _tr_note = f" · highlighted = {my_team}"
     else:
         st.dataframe(dv, width="stretch", hide_index=True, column_config=_tr_col_cfg)
         _tr_note = ""
@@ -3337,16 +3346,16 @@ elif page == "🔄 Trade Analyzer":
         }
 
         # ── Player status tags ────────────────────────────────────────────────────
-        with st.expander("🏷️ Tag players (Untouchable / Keep / Trade / Cut)", expanded=False):
+        with st.expander("Tag players (Untouchable / Keep / Trade / Cut)", expanded=False):
             _ta_players = [
                 {"name": p["name"], "pos": _pos, "value": p["value"]}
                 for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
             ]
             _ta_players.sort(key=lambda x: x["value"] or 0, reverse=True)
-            st.caption(f"Tagging **{sel_ta_team.strip()}** · 🔒 Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
+            st.caption(f"Tagging **{sel_ta_team.strip()}** · Untouchable players are excluded from trade suggestions below · shared with the Rosters page")
             tag_editor(_ta_players, "tags_trade")
 
-        # ── Your trade block (players tagged 🔄 Trade) ────────────────────────────
+        # ── Your trade block (players tagged Trade) ────────────────────────────
         _trade_block = [
             {"name": p["name"], "pos": _pos, "value": p["value"]}
             for _pos in SKILL_POSITIONS for p in td["pos_players"].get(_pos, [])
@@ -3354,7 +3363,7 @@ elif page == "🔄 Trade Analyzer":
         ]
         if _trade_block:
             _trade_block.sort(key=lambda x: x["value"] or 0, reverse=True)
-            st.markdown("**🔄 Your Trade Block**")
+            st.markdown("**Your Trade Block**")
             st.dataframe(
                 pd.DataFrame([{"Player": p["name"], "Pos": p["pos"], val_col: p["value"]} for p in _trade_block]),
                 width="stretch", hide_index=True,
@@ -3468,11 +3477,11 @@ elif page == "🔄 Trade Analyzer":
 
             def _player_status(rel):
                 if rel is None:   return "—"
-                if rel >= 15:     return "🟢 Well Above Avg"
-                if rel >= 5:      return "🟡 Above Avg"
-                if rel >= -5:     return "⚪ Near Avg"
-                if rel >= -15:    return "🟠 Below Avg"
-                return "🔴 Well Below Avg"
+                if rel >= 15:     return "Well Above Avg"
+                if rel >= 5:      return "Above Avg"
+                if rel >= -5:     return "Near Avg"
+                if rel >= -15:    return "Below Avg"
+                return "Well Below Avg"
 
             # Players by position — each player vs league avg for that position
             for pos in SKILL_POSITIONS:
@@ -3580,10 +3589,10 @@ elif page == "🔄 Trade Analyzer":
 
                 _fit = _their_supply * 0.4 + _their_need * 0.4 + _proximity * 0.2
 
-                _supply_lbl = ("🟢 Strong" if _their_supply >= 50 else
-                               "🟡 Moderate" if _their_supply >= 20 else "🔴 Weak")
-                _need_lbl   = ("🔴 High"   if _their_need   >= 50 else
-                               "🟡 Medium" if _their_need   >= 20 else "🟢 Low")
+                _supply_lbl = ("Strong" if _their_supply >= 50 else
+                               "Moderate" if _their_supply >= 20 else "Weak")
+                _need_lbl   = ("High"   if _their_need   >= 50 else
+                               "Medium" if _their_need   >= 20 else "Low")
                 _vdiff_str  = f"{_their_give_val - _my_give_val:+,}" if _my_give_val and _their_give_val else "—"
 
                 _partner_rows.append({
@@ -3636,32 +3645,32 @@ elif page == "🔄 Trade Analyzer":
             if pos == "PICK":
                 rel = owner_td.get("relative", {}).get("PICK")
                 if rel is None: return "—"
-                if rel >= 10:   return "🟢 Surplus"
-                if rel <= -10:  return "🔴 Deficit"
-                return "🟡 Average"
+                if rel >= 10:   return "Surplus"
+                if rel <= -10:  return "Deficit"
+                return "Average"
             ns = owner_td.get("need_scores",    {}).get(pos)
             ss = owner_td.get("surplus_scores", {}).get(pos)
             if ns is None or ss is None: return "—"
-            if ss > ns and ss >= 20:  return "🟢 Surplus"
-            if ns > ss and ns >= 20:  return "🔴 Deficit"
-            return "🟡 Average"
+            if ss > ns and ss >= 20:  return "Surplus"
+            if ns > ss and ns >= 20:  return "Deficit"
+            return "Average"
 
         # Two toggles: shop the explicit Trade Block, and whether to include Untouchables
         _sa_c1, _sa_c2 = st.columns(2)
         _shop_block = _sa_c1.checkbox(
-            "🔄 Shop my Trade Block", value=bool(_trade_block),
-            help="Drive suggestions from players you tagged 🔄 Trade, instead of auto-detected surplus.",
+            "Shop my Trade Block", value=bool(_trade_block),
+            help="Drive suggestions from players you tagged Trade, instead of auto-detected surplus.",
             key="ta_shop_block",
         )
         _incl_untouch = _sa_c2.checkbox(
             "Include Untouchables", value=False,
-            help="Also include players tagged 🔒 Untouchable in the suggestions.",
+            help="Also include players tagged Untouchable in the suggestions.",
             key="ta_incl_untouch",
         )
         _need_for_targets = need_pos if need_pos in SKILL_POSITIONS else None
 
         if (not _shop_block or not _trade_block) and (not surplus_pos or not need_pos or surplus_pos == need_pos):
-            st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players 🔄 Trade to shop them directly.")
+            st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players Trade to shop them directly.")
         else:
             if _shop_block and _trade_block:
                 # Suggestions driven by YOUR trade block: shop each tagged player for your need
@@ -3684,7 +3693,7 @@ elif page == "🔄 Trade Analyzer":
                     suggestions = [s for s in suggestions
                                    if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
             if not suggestions or not any(s.get("targets") for s in suggestions):
-                st.info("Not enough data to generate suggestions — tag players 🔄 Trade, or check you have a clear positional need.")
+                st.info("Not enough data to generate suggestions — tag players Trade, or check you have a clear positional need.")
             else:
                 # ── Top 5 ideal player-for-player targets ─────────────────────────
                 # Score each candidate: +2 if target has surplus of need_pos,
@@ -3719,7 +3728,7 @@ elif page == "🔄 Trade Analyzer":
                     _candidates.sort(key=lambda x: (-x["_fit"], x["_vdiff"]))
                     _top5 = [{k: v for k, v in c.items() if not k.startswith("_")}
                              for c in _candidates[:5]]
-                    st.markdown("**🏆 Top 5 Ideal Player-for-Player Targets**")
+                    st.markdown("**Top 5 Ideal Player-for-Player Targets**")
                     st.caption("Ranked by trade fit (both teams benefit) then closest value.")
                     st.dataframe(
                         pd.DataFrame(_top5),
@@ -3832,11 +3841,11 @@ elif page == "🔄 Trade Analyzer":
 
         # Build asset options: all players with FC values + all valued picks
         # (Untouchable players stay selectable here — this is manual exploration —
-        #  but get a 🔒 marker so the intent is visible.)
+        #  but get a [U] marker so the intent is visible.)
         asset_options = []
         for pos in SKILL_POSITIONS:
             for player in td["pos_players"][pos]:
-                _lock = "🔒 " if player["name"] in _untouchable else ""
+                _lock = "[U] " if player["name"] in _untouchable else ""
                 asset_options.append({
                     "label":     f"{_lock}{player['name']}  ({pos})  —  {player['value']:,}",
                     "value":     player["value"],
@@ -3901,9 +3910,9 @@ elif page == "🔄 Trade Analyzer":
                         ss = owner_td.get("surplus_scores", {}).get(pos)
                         if ns is None or ss is None:
                             return "—"
-                        if ss > ns and ss >= 20:  return "🟢 Surplus"
-                        if ns > ss and ns >= 20:  return "🔴 Deficit"
-                        return "🟡 Average"
+                        if ss > ns and ss >= 20:  return "Surplus"
+                        if ns > ss and ns >= 20:  return "Deficit"
+                        return "Average"
 
                     # Score each candidate: fit (mutual benefit) first, then closest value
                     scored_pool = []
@@ -3992,7 +4001,7 @@ elif page == "🔄 Trade Analyzer":
             _pa      = round(_tot_a / _sum * 100)
             if _gap_pct <= 5:
                 _badge_bg, _badge_tx = "var(--pill-green-bg)", "var(--pill-green-fg)"
-                _verdict = f"⚖️ Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
+                _verdict = f"Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
             else:
                 _badge_bg, _badge_tx = "var(--pill-gold-bg)", "var(--pill-gold-fg)"
                 _winner = _team_b if _gap > 0 else _team_a
@@ -4119,7 +4128,7 @@ elif page == "🏟️ Draft Room":
         for pick_label, rk_name in confirmed_map.items():
             match = next((r for r in fc_rookies if r.get("name") == rk_name), None)
             if match is None:
-                st.warning(f'Confirmed pick "{rk_name}" is no longer in the rookie rankings — value may be unavailable.', icon="⚠️")
+                st.warning(f'Confirmed pick "{rk_name}" is no longer in the rookie rankings — value may be unavailable.', icon=":material/warning:")
             pos = match.get("position", "—") if match else "—"
             owner = next((p[3] for p in picks_sorted if p[2] == pick_label), None)
             if owner:
@@ -4128,7 +4137,7 @@ elif page == "🏟️ Draft Room":
                 "name":   rk_name,
                 "pos":    pos,
                 "value":  match.get("value") if match else None,  # raw FC value for display
-                "reason": "✅ Confirmed",
+                "reason": "Confirmed",
             }
 
         # Simulate remaining
@@ -4155,18 +4164,18 @@ elif page == "🏟️ Draft Room":
                 if reach_pct <= need_reach_limit:
                     # Small sacrifice — worth taking the need position
                     selected = need_best
-                    reason   = f"📊 Need ({need_pos})"
+                    reason   = f"Need ({need_pos})"
                 else:
                     # BPA is too valuable to pass — take best available regardless of need
                     selected = best_overall
-                    reason   = f"💰 Best Available (+{reach_pct:.0%} over need)"
+                    reason   = f"Best Available (+{reach_pct:.0%} over need)"
             elif need_best:
                 # Need player IS the best available — easy call
                 selected = need_best
-                reason   = f"📊 Need ({need_pos})"
+                reason   = f"Need ({need_pos})"
             else:
                 selected = best_overall
-                reason   = "💰 Best Available"
+                reason   = "Best Available"
 
             sel_pos  = selected.get("position", "—")
             sel_name = selected.get("name")
@@ -4190,7 +4199,7 @@ elif page == "🏟️ Draft Room":
         is_confirmed = pick in confirmed
         draft_rows.append({
             "Pick":            pick,
-            "Team":            f"⭐ {row['Team']}" if my_team and row["Team"] == my_team else row["Team"],
+            "Team":            row["Team"],
             "Pick FC Value":   row["Value"],
             "Est. Rookie":     sel.get("name", "—"),
             "Pos":             sel.get("pos",  "—"),
@@ -4207,10 +4216,10 @@ elif page == "🏟️ Draft Room":
 
     # Highlight My Team's picks (Styler applies to the non-editable columns)
     _board_data = df_board
-    if my_team and (df_board["Team"] == f"⭐ {my_team}").any():
+    if my_team and (df_board["Team"] == my_team).any():
         _dr_hl = "background-color: rgba(255, 196, 0, 0.18)"
         _board_data = df_board.style.apply(
-            lambda row: [_dr_hl if row["Team"] == f"⭐ {my_team}" else "" for _ in row], axis=1
+            lambda row: [_dr_hl if row["Team"] == my_team else "" for _ in row], axis=1
         )
 
     edited = st.data_editor(
@@ -4232,7 +4241,7 @@ elif page == "🏟️ Draft Room":
     )
 
     btn_c1, btn_c2, _ = st.columns([1, 1, 4])
-    if btn_c1.button("🔄 Update Estimates", key="dr_update", width="stretch"):
+    if btn_c1.button("Update Estimates", key="dr_update", width="stretch"):
         new_confirmed = {}
         for _, row in edited.iterrows():
             if row.get("Pick Made") and row.get("Rookie Selected"):
@@ -4241,7 +4250,7 @@ elif page == "🏟️ Draft Room":
         save_draft_selections(league_id, new_confirmed)
         st.rerun()
 
-    if btn_c2.button("🗑️ Clear All", key="dr_clear", width="stretch"):
+    if btn_c2.button("Clear All", key="dr_clear", width="stretch"):
         st.session_state.draft_confirmed = {}
         clear_draft_selections(league_id)
         st.rerun()
@@ -4280,7 +4289,7 @@ elif page == "🏟️ Draft Room":
     pool_pos  = pool_col1.multiselect("Filter by position", SKILL_POSITIONS, key="dr_pool_pos")
     pool_srch = pool_col2.text_input("Search pool", key="dr_pool_srch", placeholder="e.g. Jeanty")
     pool_col3.markdown('<div style="padding-top: 1.75rem;"></div>', unsafe_allow_html=True)
-    pool_fav  = pool_col3.checkbox("⭐ Only", key="dr_pool_fav")
+    pool_fav  = pool_col3.checkbox("Only", key="dr_pool_fav")
 
     df_pool = pd.DataFrame(pool_rows)
     if not df_pool.empty:
@@ -4293,7 +4302,7 @@ elif page == "🏟️ Draft Room":
     else:
         fav_grid(df_pool, "Rookie", "dr_pool_fav_grid",
                  col_cfg={"Value": COL_CFG["Value"]})
-    st.caption(f"{plural(len(df_pool), 'rookie')} still available · tick the ⭐ box to favourite")
+    st.caption(f"{plural(len(df_pool), 'rookie')} still available · tick the Fav box to favourite")
 
 # ── Page: Fantasy News ───────────────────────────────────────────────────────
 elif page == "📰 Fantasy News":
