@@ -823,6 +823,31 @@ def league_avatar_url(league, thumb=True):
         return None
     return f"https://sleepercdn.com/avatars/{'thumbs/' if thumb else ''}{av}"
 
+def user_avatar_url(user, thumb=True):
+    """A team owner's avatar URL: their custom team logo (metadata.avatar — already a
+    full sleepercdn URL) if set, else their Sleeper profile avatar, else None."""
+    if not user:
+        return None
+    md_av = (user.get("metadata") or {}).get("avatar")
+    if md_av:
+        return md_av
+    av = user.get("avatar")
+    if av:
+        return f"https://sleepercdn.com/avatars/{'thumbs/' if thumb else ''}{av}"
+    return None
+
+def user_avatar_tag(user, fallback_name="?", px=40, radius=10):
+    """HTML for a team owner's Sleeper avatar tile (initial-tile fallback)."""
+    _url  = user_avatar_url(user)
+    _name = _html.escape(fallback_name or "?")
+    if _url:
+        return (f'<img src="{_html.escape(_url)}" alt="" style="width:{px}px;height:{px}px;'
+                f'border-radius:{radius}px;object-fit:cover;border:1px solid var(--border);flex:0 0 auto;">')
+    return (f'<div style="width:{px}px;height:{px}px;border-radius:{radius}px;flex:0 0 auto;'
+            f'background:linear-gradient(135deg,#1f6f43,#14532d);display:flex;align-items:center;'
+            f'justify-content:center;font-weight:600;font-size:{px*0.42:.0f}px;color:#fff;">'
+            f'{(_name[:1] or "?").upper()}</div>')
+
 def league_format_badges(league):
     """KTC-style chips: teams · QB format · starters · PPR · TE-prem · IDP."""
     rp = league.get("roster_positions") or []
@@ -1792,6 +1817,18 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
     td   = team_data[rid]
     prof = _team_value_profile(team_data, players)
 
+    # Owner identity — Sleeper avatar (team logo → profile pic → initial) + team name
+    _owner    = globals().get("team_owner_user", {}).get(my_team)
+    _owner_nm = (_owner or {}).get("display_name")
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:12px;margin:2px 0 16px;">'
+        f'{user_avatar_tag(_owner, my_team, px=46, radius=12)}'
+        f'<div><div style="font-size:1.2rem;font-weight:700;color:var(--text-hi);line-height:1.15;">'
+        f'{_html.escape(my_team)}</div>'
+        + (f'<div style="font-size:.8rem;color:var(--text-mid);">@{_html.escape(_owner_nm)}</div>'
+           if _owner_nm else '')
+        + '</div></div>', unsafe_allow_html=True)
+
     # Panel 1 — Team Rating
     rating, colour, blurb = team_rating(rid, prof)
     total, avg_age, pick_val = prof[rid]
@@ -2264,12 +2301,14 @@ if st.session_state.get("_player_tags_league") != league_id:
 # ── Sidebar: identity + value source (rendered early — value_source drives the
 #    data pipeline below; team names derive straight from rosters/users) ───────
 _user_map_sb = {u["user_id"]: u for u in users}
-_sb_team_names = sorted({
-    (( _user_map_sb.get(r.get("owner_id") or "", {}) ).get("metadata") or {}).get("team_name")
-    or _user_map_sb.get(r.get("owner_id") or "", {}).get("display_name")
-    or f"Team {r['roster_id']}"
-    for r in rosters
-})
+def _roster_team_name(r):
+    _u = _user_map_sb.get(r.get("owner_id") or "", {})
+    return ((_u.get("metadata") or {}).get("team_name")
+            or _u.get("display_name") or f"Team {r['roster_id']}")
+_sb_team_names = sorted({_roster_team_name(r) for r in rosters})
+# team name → owner Sleeper user (drives owner avatars across the app)
+team_owner_user = {_roster_team_name(r): _user_map_sb.get(r.get("owner_id") or "", {})
+                   for r in rosters}
 
 with st.sidebar:
     # Brand logo IS the Home button: a full-width button painted with the logo
@@ -2341,7 +2380,9 @@ with st.sidebar:
     render_league_badges(league)
     st.caption(f"Sleeper · {league.get('season', '')}")
 
-    # My Team + Value Source — persisted per league; re-seeded when league changes
+    # My Team + Value Source are now chosen in Settings. Their state is still seeded
+    # and persisted HERE (value_source must resolve before the data pipeline below),
+    # and the selected team shows as a read-only identity badge under the league data.
     _team_opts = ["—"] + _sb_team_names
     if st.session_state.get("_prefs_seeded_for") != league_id:
         st.session_state._prefs_seeded_for = league_id
@@ -2356,30 +2397,41 @@ with st.sidebar:
             st.session_state.pop(_sk, None)
         st.session_state.pop("_last_my_team", None)
         st.session_state.pop("_last_value_source", None)
-    _my_team_sel = st.selectbox("Choose Team you want to View", _team_opts, key="my_team_pick")
-    my_team = None if _my_team_sel == "—" else _my_team_sel
-    if st.session_state.get("_last_my_team", "__unset__") != my_team:
-        save_league_prefs(league_id, team=my_team)
-        # Identity changed → reset page-level sticky team choices so the
-        # new team becomes the default everywhere on next visit
-        for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
-            st.session_state.pop(_sk, None)
-        st.session_state._last_my_team = my_team
-
-    # Value source — drives every Value/Rank column; persisted per league.
-    # List is format-filtered (KTC/DN hidden for 1-QB); coerce any stale saved
-    # value into the allowed set so the selectbox can't raise.
+    # Coerce any stale persisted choices into the currently-allowed sets
     _vs_options_sb = available_value_sources(num_qbs, owner_view)
     if st.session_state.get("value_source") not in _vs_options_sb:
         st.session_state.value_source = "FC Dynasty"
-    st.selectbox("Value source to use", _vs_options_sb, key="value_source", format_func=vs_label,
-                 help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
-                      "win-now/seasonal lens — pick it for redraft or brand-new leagues.")
-    _rd_note = redraft_note(st.session_state.value_source)
-    if _rd_note:
-        st.caption(_rd_note)
-    if owner_view and num_qbs < 2:
-        st.caption("Owner view: KeepTradeCut & DynastyNerds are SuperFlex-only — hidden for this 1-QB league.")
+    if st.session_state.get("my_team_pick", "—") not in _team_opts:
+        st.session_state.my_team_pick = "—"
+    # The My Team / Value-source selectboxes now live only on the Settings page.
+    # Streamlit drops widget-keyed state on reruns where the widget isn't rendered,
+    # so re-assert each run to keep both alive when navigating to other pages.
+    st.session_state.value_source = st.session_state.value_source
+    st.session_state.my_team_pick = st.session_state.my_team_pick
+    my_team = None if st.session_state.get("my_team_pick", "—") == "—" else st.session_state.my_team_pick
+
+    # Read-only identity badge: owner avatar + team name + @handle, under the league data
+    if my_team:
+        _own    = team_owner_user.get(my_team)
+        _own_nm = (_own or {}).get("display_name")
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:11px;margin:8px 0 2px;">'
+            f'{user_avatar_tag(_own, my_team, px=40, radius=10)}'
+            f'<div style="line-height:1.25;"><div style="font-size:.95rem;font-weight:700;color:var(--text-hi);">'
+            f'{_html.escape(my_team)}</div>'
+            + (f'<div style="font-size:.76rem;color:var(--text-mid);">@{_html.escape(_own_nm)}</div>'
+               if _own_nm else '')
+            + '</div></div>', unsafe_allow_html=True)
+        st.caption(f"Value source: **{vs_label(st.session_state.value_source)}** · change in **Settings**")
+    else:
+        st.caption("No team selected — choose yours in **Settings**.")
+
+    # Persist on change (the selectors that drive these now live in Settings)
+    if st.session_state.get("_last_my_team", "__unset__") != my_team:
+        save_league_prefs(league_id, team=my_team)
+        for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
+            st.session_state.pop(_sk, None)
+        st.session_state._last_my_team = my_team
     if st.session_state.get("_last_value_source") != st.session_state.value_source:
         save_league_prefs(league_id, value_source=st.session_state.value_source)
         st.session_state._last_value_source = st.session_state.value_source
@@ -3369,13 +3421,36 @@ elif page == "Settings":
     col_s1, col_s2 = st.columns(2)
 
     with col_s1:
-        st.subheader("Value Source")
+        st.subheader("My Team & Value Source")
+        # Team — persisted as your saved team for this league (avatar shown below)
+        st.selectbox("Choose Team you want to View", ["—"] + _sb_team_names, key="my_team_pick")
+        _set_team = None if st.session_state.get("my_team_pick", "—") == "—" else st.session_state.my_team_pick
+        if _set_team:
+            _s_own    = team_owner_user.get(_set_team)
+            _s_own_nm = (_s_own or {}).get("display_name")
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:11px;margin:-2px 0 12px;">'
+                f'{user_avatar_tag(_s_own, _set_team, px=42, radius=11)}'
+                f'<div style="line-height:1.25;"><div style="font-weight:700;color:var(--text-hi);">'
+                f'{_html.escape(_set_team)}</div>'
+                + (f'<div style="font-size:.78rem;color:var(--text-mid);">@{_html.escape(_s_own_nm)}</div>'
+                   if _s_own_nm else '')
+                + '</div></div>', unsafe_allow_html=True)
+        # Value source — drives the Value/Rank columns everywhere
+        st.selectbox("Value source to use", available_value_sources(num_qbs, owner_view),
+                     key="value_source", format_func=vs_label,
+                     help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
+                          "win-now/seasonal lens — pick it for redraft or brand-new leagues.")
+        _rd_note = redraft_note(st.session_state.value_source)
+        if _rd_note:
+            st.caption(_rd_note)
+        if owner_view and num_qbs < 2:
+            st.caption("Owner view: KeepTradeCut & DynastyNerds are SuperFlex-only — hidden for this 1-QB league.")
         st.caption(
-            "Controls which data source drives the **Value** and **Rank** columns "
-            "across Players & Picks, Front Office, and the Trade Room. Picks always use FC values."
+            "Value source drives the **Value** and **Rank** columns across Players & Picks, "
+            "Front Office, and the Trade Room. Picks always use FC values."
         )
         _vs_sel = st.session_state.get("value_source", "FC Dynasty")
-        st.success(f"Current source: **{_vs_sel}** — change it anytime from the **sidebar** (under My Team).")
         source_info = {
             "FC Dynasty":    "FantasyCalc dynasty SuperFlex value. Normalised to 0–10K. Default.",
             "DN Dynasty":    "DynastyNerds dynasty SuperFlex — ranker consensus (~330 players). 0–10K.",
