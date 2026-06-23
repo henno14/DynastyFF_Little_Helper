@@ -2700,10 +2700,13 @@ if page == "Overview":
                          f'width:28px;height:28px;border-radius:8px;background:{_chip_bg};color:{_chip_fg};'
                          f'font-weight:700;font-size:0.84rem">{i+1}</span>')
 
+                _pr_av = user_avatar_tag(globals().get("team_owner_user", {}).get(row["team"]),
+                                         row["team"], px=22, radius=6)
                 _tbl_html += '<tr>'
                 _tbl_html += f'<td style="text-align:center;padding:6px 4px;{_hl_l}">{_chip}</td>'
                 _tbl_html += (f'<td style="padding:6px 12px;color:{_name_c};font-weight:{_name_w};{_hl}">'
-                              f'{row["team"]}{_you}</td>')
+                              f'<div style="display:flex;align-items:center;gap:8px;">{_pr_av}'
+                              f'<span>{row["team"]}{_you}</span></div></td>')
                 for _dim, _excl in [("QB", False), ("RB", False), ("WR", False), ("TE", False),
                                     ("Picks", _excl_picks), ("DEF", _excl_def)]:
                     _tbl_html += _pr_rank(row[_dim], _n, excluded=_excl, hl=_hl)
@@ -4098,6 +4101,11 @@ elif page == "Trade Room":
                 st.markdown("<span style='color:var(--blue); font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
                 _team_a = st.selectbox("Team A", _all_teams, index=_all_teams.index(_a_default),
                                        key="calc_team_a", label_visibility="collapsed")
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:9px;margin:2px 0 8px;">'
+                    f'{user_avatar_tag(globals().get("team_owner_user", {}).get(_team_a), _team_a, px=30, radius=8)}'
+                    f'<span style="font-size:.86rem;font-weight:600;color:var(--text-hi);">{_html.escape(_team_a)}</span>'
+                    f'</div>', unsafe_allow_html=True)
                 # Key includes the team so switching teams never carries stale options
                 _side_a = st.multiselect("Players & picks", sorted(_team_assets[_team_a].keys()),
                                          key=f"calc_side_a_{_team_a}", placeholder=f"Add from {_team_a}…",
@@ -4106,6 +4114,11 @@ elif page == "Trade Room":
                 st.markdown("<span style='color:var(--purple); font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
                 _team_b = st.selectbox("Team B", _all_teams, index=_all_teams.index(_b_default),
                                        key="calc_team_b", label_visibility="collapsed")
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:9px;margin:2px 0 8px;">'
+                    f'{user_avatar_tag(globals().get("team_owner_user", {}).get(_team_b), _team_b, px=30, radius=8)}'
+                    f'<span style="font-size:.86rem;font-weight:600;color:var(--text-hi);">{_html.escape(_team_b)}</span>'
+                    f'</div>', unsafe_allow_html=True)
                 _side_b = st.multiselect("Players & picks", sorted(_team_assets[_team_b].keys()),
                                          key=f"calc_side_b_{_team_b}", placeholder=f"Add from {_team_b}…",
                                          label_visibility="collapsed")
