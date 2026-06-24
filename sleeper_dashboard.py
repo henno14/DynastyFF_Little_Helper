@@ -705,15 +705,15 @@ def get_active_value(pid, fc_values, val_maps, source):
         return round(v / 10282 * 10000) if v else None
 
     if source == "FC Dynasty":
-        return _norm_fc(fc.get("value"))
+        _val = _norm_fc(fc.get("value"))
     elif source == "FC Redraft":            # win-now/seasonal lens — NOT in consensus
-        return _norm_fc(fc.get("redraftValue"))
+        _val = _norm_fc(fc.get("redraftValue"))
     elif source == "DN Dynasty":
-        return dn.get("value")
+        _val = dn.get("value")
     elif source == "KTC":
-        return ktc.get("value")
+        _val = ktc.get("value")
     elif source == "DP Values":
-        return dp.get("value")
+        _val = dp.get("value")
     else:  # Consensus Avg — dynasty sources only (redraft excluded by design)
         vals = [v for v in [
             _norm_fc(fc.get("value")),
@@ -721,7 +721,16 @@ def get_active_value(pid, fc_values, val_maps, source):
             ktc.get("value"),
             dp.get("value"),
         ] if v is not None and v > 0]
-        return int(sum(vals) / len(vals)) if vals else None
+        _val = int(sum(vals) / len(vals)) if vals else None
+
+    # Positional Weighting — league-scoring tilt (e.g. TE-premium) applied app-wide via
+    # module globals set after the league loads. Picks / unknown positions stay at 1.0.
+    _w = globals().get("_POS_WEIGHTS")
+    if _w and _val:
+        _wm = _w.get(globals().get("_PID_POS", {}).get(pid))
+        if _wm and _wm != 1.0:
+            _val = round(_val * _wm)
+    return _val
 
 
 def get_active_rank(pid, fc_values, val_maps, source):
@@ -1402,6 +1411,20 @@ ANALYSIS_DIMENSIONS  = ["QB", "RB", "WR", "TE", "PICK"]  # positions + picks
 # must overpay (× that player's value). "Off" = pure value calculator.
 TF_PRESETS = {"Off": 0.0, "Light": 0.10, "Standard": 0.18, "Heavy": 0.28}
 TF_NAMES   = list(TF_PRESETS)
+
+
+def compute_pos_weights(scoring, enabled):
+    """Per-position value multipliers derived from league scoring. The value sources
+    (FantasyCalc et al.) already price Superflex/2QB and PPR, so the genuine gap they
+    DON'T model is TE-premium — `bonus_rec_te` lifts TE value vs WR. Returns all-1.0
+    when disabled or standard-scoring. Built as a dict so it can extend later."""
+    w = {p: 1.0 for p in ("QB", "RB", "WR", "TE")}
+    if not enabled:
+        return w
+    te_bonus = float((scoring or {}).get("bonus_rec_te") or 0)
+    if te_bonus > 0:
+        w["TE"] = round(1.0 + min(te_bonus, 1.0) * 0.20, 3)   # 0.5 → ×1.10 · 1.0 → ×1.20
+    return w
 
 def build_trade_analysis(rosters, users, players, fc_values, fc_picks, slot_map, traded_ownership, drafts, active_values=None):
     """
@@ -2463,12 +2486,14 @@ with st.sidebar:
         st.session_state.value_source = _saved_vs if _saved_vs in _vs_opts_boot else "FC Dynasty"
         _saved_tf = _prefs.get("trade_fairness")
         st.session_state.trade_fairness = _saved_tf if _saved_tf in TF_PRESETS else "Off"
+        st.session_state.pos_weighting = bool(_prefs.get("positional_weighting", True))
         # New league context → page-level sticky team choices no longer apply
         for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
             st.session_state.pop(_sk, None)
         st.session_state.pop("_last_my_team", None)
         st.session_state.pop("_last_value_source", None)
         st.session_state.pop("_last_trade_fairness", None)
+        st.session_state.pop("_last_pos_weighting", None)
     # Coerce any stale persisted choices into the currently-allowed sets
     _vs_options_sb = available_value_sources(num_qbs, owner_view)
     if st.session_state.get("value_source") not in _vs_options_sb:
@@ -2477,12 +2502,14 @@ with st.sidebar:
         st.session_state.my_team_pick = "—"
     if st.session_state.get("trade_fairness") not in TF_PRESETS:
         st.session_state.trade_fairness = "Off"
-    # The My Team / Value-source / Trade-fairness selectboxes live only on Settings (+
-    # the calculator for fairness). Streamlit drops widget-keyed state on reruns where
-    # the widget isn't rendered, so re-assert each run to keep them alive across pages.
+    st.session_state.setdefault("pos_weighting", True)
+    # The My Team / Value-source / Trade-fairness / Positional-weighting widgets live
+    # only on Settings (+ the calculator for fairness). Streamlit drops widget-keyed
+    # state on reruns where the widget isn't rendered, so re-assert each run.
     st.session_state.value_source = st.session_state.value_source
     st.session_state.my_team_pick = st.session_state.my_team_pick
     st.session_state.trade_fairness = st.session_state.trade_fairness
+    st.session_state.pos_weighting = bool(st.session_state.pos_weighting)
     my_team = None if st.session_state.get("my_team_pick", "—") == "—" else st.session_state.my_team_pick
 
     # Read-only identity badge: owner avatar + team name + @handle, under the league data
@@ -2513,6 +2540,15 @@ with st.sidebar:
     if st.session_state.get("_last_trade_fairness", "__unset__") != st.session_state.trade_fairness:
         save_league_prefs(league_id, trade_fairness=st.session_state.trade_fairness)
         st.session_state._last_trade_fairness = st.session_state.trade_fairness
+    if st.session_state.get("_last_pos_weighting", "__unset__") != st.session_state.pos_weighting:
+        save_league_prefs(league_id, positional_weighting=st.session_state.pos_weighting)
+        st.session_state._last_pos_weighting = st.session_state.pos_weighting
+
+# Positional Weighting — set the module globals get_active_value reads so the league's
+# scoring tilt (e.g. TE-premium) flows into EVERY value/rank-derived number app-wide.
+_PID_POS     = {pid: (p.get("position") or "") for pid, p in players.items()}
+_POS_WEIGHTS = compute_pos_weights(scoring, st.session_state.pos_weighting)
+_pw_tag      = "pw" + "_".join(f"{k}{v}" for k, v in sorted(_POS_WEIGHTS.items()) if v != 1.0)
 
 value_source = st.session_state["value_source"]
 val_col      = value_col_label(value_source)   # dynamic column header e.g. "FC D Value"
@@ -2529,7 +2565,7 @@ active_values = {
 _theme = "Dark"   # drives Plotly chart templates; surfaces/colours now via config.toml + top CSS
 
 # Trade/DEF analysis — cached in session_state; only recomputes when value_source changes or Refresh is clicked
-_trade_cache_key = f"trade_data_{league_id}_{value_source}"
+_trade_cache_key = f"trade_data_{league_id}_{value_source}_{_pw_tag}"
 if st.session_state.get("_trade_cache_key") != _trade_cache_key:
     team_data, league_avgs, all_players_by_pos = build_trade_analysis(
         rosters, users, players, fc_values, fc_picks, slot_map, traded_ownership, drafts,
@@ -3544,6 +3580,21 @@ elif page == "Settings":
         missing = [name for name, m in [("DN", dn_map), ("KTC", ktc_map), ("DP", dp_map)] if not m]
         if missing:
             st.warning(f"Could not load: {', '.join(missing)}. Those sources will be skipped in Consensus Avg.")
+
+        st.markdown("**Positional Weighting**")
+        st.checkbox(
+            "Auto-weight by league scoring", key="pos_weighting",
+            help="Tilts player values for scoring your value source can't model — mainly TE-premium "
+                 "(TEs worth more vs WR). Off = raw value-source numbers. Applies to every value & rank "
+                 "across the app and the trade tools.")
+        _pw_now    = compute_pos_weights(scoring, st.session_state.pos_weighting)
+        _pw_active = [f"{k} ×{v}" for k, v in _pw_now.items() if v != 1.0]
+        if _pw_active:
+            st.caption("Active tilt: **" + " · ".join(_pw_active) + "** (TE-premium league). Your value "
+                       "source already prices Superflex / 2QB and PPR, so those aren't re-weighted.")
+        elif st.session_state.pos_weighting:
+            st.caption("This league's scoring needs no positional tilt (standard TE). Superflex / PPR are "
+                       "already baked into your value source.")
 
     with col_s2:
         st.subheader("Theme")
