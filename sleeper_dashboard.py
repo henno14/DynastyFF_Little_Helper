@@ -1398,6 +1398,11 @@ NEED_REACH_LIMIT = 0.15  # max value % sacrificed to fill a need over BPA (15% =
 SKILL_POSITIONS      = ["QB", "RB", "WR", "TE"]
 ANALYSIS_DIMENSIONS  = ["QB", "RB", "WR", "TE", "PICK"]  # positions + picks
 
+# Trade Fairness presets — premium the side ACQUIRING the single best player in a deal
+# must overpay (× that player's value). "Off" = pure value calculator.
+TF_PRESETS = {"Off": 0.0, "Light": 0.10, "Standard": 0.18, "Heavy": 0.28}
+TF_NAMES   = list(TF_PRESETS)
+
 def build_trade_analysis(rosters, users, players, fc_values, fc_picks, slot_map, traded_ownership, drafts, active_values=None):
     """
     Per-team analysis across QB/RB/WR/TE positions AND draft picks:
@@ -1744,6 +1749,45 @@ def rank_trade_partners(rid, td, team_data, untouchable, my_need, my_surplus):
     return rows
 
 
+def suggest_sweetener(team_data, from_rid, target_needs, shortfall, exclude_names=(),
+                      untouchable=()):
+    """The single best balancing asset on `from_rid`'s roster: fills `target_needs`
+    (pos→score) and is value-matched to `shortfall`, skipping anything in
+    `exclude_names`/`untouchable`. Shared by the Trade Calculator and the Overview
+    Best-Trade-Partner tile so 'the piece that evens the deal' is computed one way.
+    Returns {name, pos, value, is_pick, why} or None."""
+    if not from_rid or from_rid not in team_data or shortfall <= 0:
+        return None
+    td = team_data[from_rid]
+    exclude, untouch = set(exclude_names), set(untouchable)
+    cands = []
+    for _pos in SKILL_POSITIONS:
+        for _p in td.get("pos_players", {}).get(_pos, []):
+            _v = _p.get("value") or 0
+            if _v <= 0 or _p["name"] in exclude or _p["name"] in untouch:
+                continue
+            cands.append((_p["name"], _pos, _v, False, target_needs.get(_pos, 0) / 100.0))
+    for _pk in td.get("picks", []):
+        _v = round((_pk.get("value") or 0) / 10282 * 10000)
+        if _v <= 0 or _pk["label"] in exclude:
+            continue
+        cands.append((_pk["label"], "PICK", _v, True, 0.5))
+    best, best_score = None, -1.0
+    for _name, _pos, _v, _is_pick, _nfit in cands:
+        _vfit  = max(0.0, 1.0 - abs(_v - shortfall) / max(shortfall, 1))
+        _score = _nfit * 0.5 + _vfit * 0.5
+        if _v > shortfall * 1.9:
+            _score *= 0.35
+        if _score > best_score:
+            best, best_score = (_name, _pos, _v, _is_pick), _score
+    if not best:
+        return None
+    _name, _pos, _v, _is_pick = best
+    _why = ("a pick to build with" if _is_pick else
+            (f"fills the {_pos} need" if target_needs.get(_pos, 0) >= 20 else f"{_pos} depth"))
+    return {"name": _name, "pos": _pos, "value": _v, "is_pick": _is_pick, "why": _why}
+
+
 # ── Insight facts: derive win-now / future / power ranks for every team from
 #    values the app ALREADY computes (no re-fetch), then hand to insight_text. ──
 def _league_ranks_for_facts(team_data, players, prof=None):
@@ -1913,8 +1957,33 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                     <div style="width:{100 - _pa}%; background:var(--purple); color:#04210F; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
                   </div>
                 </div>""", unsafe_allow_html=True)
-            st.caption(f"Send **{_html.escape(bp['_give_name'])}** ({_bp_surplus}) · "
-                       f"get **{_html.escape(bp['_get_name'])}** ({_bp_need}) — refine in the Trade Room.")
+            # Build the "right" trade: apply the Premium Curve, then suggest the piece the
+            # lighter side adds to even it (same engine as the Trade Calculator).
+            _pc_name  = st.session_state.get("trade_fairness", "Off")
+            _pc_frac  = TF_PRESETS.get(_pc_name, 0.0)
+            _prem     = round(_pc_frac * max(_gv, _tv))
+            _eff_you  = _gv + (_prem if _gv >= _tv else 0)
+            _eff_them = _tv + (_prem if _tv >  _gv else 0)
+            _short    = abs(_eff_you - _eff_them)
+            _bp_rid   = team_name_to_rid.get(bp["Team"])
+            _line = (f"Send **{_html.escape(bp['_give_name'])}** ({_bp_surplus}) · "
+                     f"get **{_html.escape(bp['_get_name'])}** ({_bp_need})")
+            if _short > 0.05 * (max(_eff_you, _eff_them) or 1):
+                if _eff_you > _eff_them:        # you give more → THEY add a piece you need
+                    _sw = suggest_sweetener(team_data, _bp_rid, td.get("need_scores", {}),
+                                            _short, exclude_names={bp["_get_name"]})
+                    if _sw:
+                        _line += (f" **+ they add {_html.escape(_sw['name'])}** "
+                                  f"({_sw['pos']} · {_sw['value']:,})")
+                else:                          # you give less → YOU add a piece they need
+                    _their_needs = team_data[_bp_rid].get("need_scores", {}) if _bp_rid else {}
+                    _sw = suggest_sweetener(team_data, rid, _their_needs, _short,
+                                            exclude_names={bp["_give_name"]}, untouchable=_untouch)
+                    if _sw:
+                        _line += (f" **+ you add {_html.escape(_sw['name'])}** "
+                                  f"({_sw['pos']} · {_sw['value']:,})")
+            _pc_tag = f" · Premium Curve: {_pc_name}" if _pc_frac > 0 else ""
+            st.caption(_line + f" — refine in the Trade Room{_pc_tag}.")
         else:
             st.caption("No clean value-matched partner right now — see the Trade Room for options.")
 
@@ -2392,22 +2461,28 @@ with st.sidebar:
         _saved_vs = _prefs.get("value_source")
         _vs_opts_boot = available_value_sources(num_qbs, owner_view)
         st.session_state.value_source = _saved_vs if _saved_vs in _vs_opts_boot else "FC Dynasty"
+        _saved_tf = _prefs.get("trade_fairness")
+        st.session_state.trade_fairness = _saved_tf if _saved_tf in TF_PRESETS else "Off"
         # New league context → page-level sticky team choices no longer apply
         for _sk in [k for k in list(st.session_state.keys()) if str(k).startswith("_sticky_")]:
             st.session_state.pop(_sk, None)
         st.session_state.pop("_last_my_team", None)
         st.session_state.pop("_last_value_source", None)
+        st.session_state.pop("_last_trade_fairness", None)
     # Coerce any stale persisted choices into the currently-allowed sets
     _vs_options_sb = available_value_sources(num_qbs, owner_view)
     if st.session_state.get("value_source") not in _vs_options_sb:
         st.session_state.value_source = "FC Dynasty"
     if st.session_state.get("my_team_pick", "—") not in _team_opts:
         st.session_state.my_team_pick = "—"
-    # The My Team / Value-source selectboxes now live only on the Settings page.
-    # Streamlit drops widget-keyed state on reruns where the widget isn't rendered,
-    # so re-assert each run to keep both alive when navigating to other pages.
+    if st.session_state.get("trade_fairness") not in TF_PRESETS:
+        st.session_state.trade_fairness = "Off"
+    # The My Team / Value-source / Trade-fairness selectboxes live only on Settings (+
+    # the calculator for fairness). Streamlit drops widget-keyed state on reruns where
+    # the widget isn't rendered, so re-assert each run to keep them alive across pages.
     st.session_state.value_source = st.session_state.value_source
     st.session_state.my_team_pick = st.session_state.my_team_pick
+    st.session_state.trade_fairness = st.session_state.trade_fairness
     my_team = None if st.session_state.get("my_team_pick", "—") == "—" else st.session_state.my_team_pick
 
     # Read-only identity badge: owner avatar + team name + @handle, under the league data
@@ -2435,6 +2510,9 @@ with st.sidebar:
     if st.session_state.get("_last_value_source") != st.session_state.value_source:
         save_league_prefs(league_id, value_source=st.session_state.value_source)
         st.session_state._last_value_source = st.session_state.value_source
+    if st.session_state.get("_last_trade_fairness", "__unset__") != st.session_state.trade_fairness:
+        save_league_prefs(league_id, trade_fairness=st.session_state.trade_fairness)
+        st.session_state._last_trade_fairness = st.session_state.trade_fairness
 
 value_source = st.session_state["value_source"]
 val_col      = value_col_label(value_source)   # dynamic column header e.g. "FC D Value"
@@ -3483,6 +3561,17 @@ elif page == "Settings":
              "in the Draft Room. 0% = pure BPA, 40% = heavily need-driven. (Also on the Draft Room page.)",
     )
 
+    st.divider()
+    st.subheader("Trade Room")
+    st.caption("**Premium Curve** — your **Value source** scores raw market value (an even-value trade). "
+               "The Premium Curve layers real dynasty behaviour on top: the best player usually wins a "
+               "trade, so landing the single most valuable player costs extra. Off = pure value. When a "
+               "side comes short, the Trade Room suggests a balancing piece. Also on the Trade Calculator.")
+    st.selectbox(
+        "Trade Fairness", TF_NAMES, key="trade_fairness",
+        help="Off = even on raw value · Light / Standard / Heavy add a 10 / 18 / 28% premium on the "
+             "best player in the deal, then suggest a sweetener to even it up.")
+
     # ════════ Scoring Rules (merged in — will become a sub-menu) ═════════════
     st.divider()
     st.header(":material/rule: Scoring Rules")
@@ -4077,20 +4166,43 @@ elif page == "Trade Room":
                 "and the fairness read updates live."
             )
 
-            # Per-team asset universe (normalised to 0–10K), so each side filters to its team
-            _team_assets = {}
+            _tf_name = st.selectbox(
+                "Premium Curve", TF_NAMES, key="trade_fairness",
+                help="The best player usually wins a trade. Off = pure value · Light/Standard/Heavy add a "
+                     "10/18/28% premium on the best player, then suggest a sweetener the other team needs.")
+            _tf_frac = TF_PRESETS.get(_tf_name, 0.0)
+            if _tf_frac > 0:
+                st.caption(f"The **{value_source}** totals below are raw market value. The **Premium Curve "
+                           f"({_tf_name})** layers a {int(_tf_frac*100)}% premium on the best player on top — "
+                           "so a value-even deal can still come up short, and we suggest the piece to close it.")
+            else:
+                st.caption(f"The **{value_source}** totals below are raw market value — a pure even-value read. "
+                           "Turn the **Premium Curve** on to weigh the best player heavier and get a balancing "
+                           "suggestion.")
+
+            # Per-team asset universe (normalised to 0–10K) + metadata for the sweetener engine
+            _calc_untouch = {nm for nm, t in st.session_state.get("player_tags", {}).items()
+                             if t == "Untouchable"}
+            _team_assets, _team_meta = {}, {}
             for _r2, _t2 in team_data.items():
-                _d = {}
+                _d, _m = {}, {}
                 for _p2 in SKILL_POSITIONS:
                     for _pl in _t2["pos_players"].get(_p2, []):
                         _v = _pl["value"] or 0
                         if _v:
-                            _d[f"{_pl['name']}  ({_p2}) — {_v:,}"] = _v
+                            _lbl = f"{_pl['name']}  ({_p2}) — {_v:,}"
+                            _d[_lbl] = _v
+                            _m[_lbl] = {"value": _v, "pos": _p2, "name": _pl["name"],
+                                        "is_pick": False, "untouchable": _pl["name"] in _calc_untouch}
                 for _pk in _t2.get("picks", []):
                     _v = round((_pk["value"] or 0) / 10282 * 10000)
                     if _v:
-                        _d[f"{_pk['label']}  (Pick) — {_v:,}"] = _v
+                        _lbl = f"{_pk['label']}  (Pick) — {_v:,}"
+                        _d[_lbl] = _v
+                        _m[_lbl] = {"value": _v, "pos": "PICK", "name": _pk["label"],
+                                    "is_pick": True, "untouchable": False}
                 _team_assets[_t2["name"]] = _d
+                _team_meta[_t2["name"]]   = _m
 
             _all_teams = sorted(_team_assets.keys())
             _a_default = my_team if my_team in _all_teams else _all_teams[0]
@@ -4107,8 +4219,12 @@ elif page == "Trade Room":
                     f'<span style="font-size:.86rem;font-weight:600;color:var(--text-hi);">{_html.escape(_team_a)}</span>'
                     f'</div>', unsafe_allow_html=True)
                 # Key includes the team so switching teams never carries stale options
+                _ka = f"calc_side_a_{_team_a}"
+                _add_a = st.session_state.pop("_calc_add_a", None)   # one-click sweetener add
+                if _add_a and _add_a in _team_assets[_team_a] and _add_a not in st.session_state.get(_ka, []):
+                    st.session_state[_ka] = st.session_state.get(_ka, []) + [_add_a]
                 _side_a = st.multiselect("Players & picks", sorted(_team_assets[_team_a].keys()),
-                                         key=f"calc_side_a_{_team_a}", placeholder=f"Add from {_team_a}…",
+                                         key=_ka, placeholder=f"Add from {_team_a}…",
                                          label_visibility="collapsed")
             with _cc2:
                 st.markdown("<span style='color:var(--purple); font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
@@ -4119,8 +4235,12 @@ elif page == "Trade Room":
                     f'{user_avatar_tag(globals().get("team_owner_user", {}).get(_team_b), _team_b, px=30, radius=8)}'
                     f'<span style="font-size:.86rem;font-weight:600;color:var(--text-hi);">{_html.escape(_team_b)}</span>'
                     f'</div>', unsafe_allow_html=True)
+                _kb = f"calc_side_b_{_team_b}"
+                _add_b = st.session_state.pop("_calc_add_b", None)   # one-click sweetener add
+                if _add_b and _add_b in _team_assets[_team_b] and _add_b not in st.session_state.get(_kb, []):
+                    st.session_state[_kb] = st.session_state.get(_kb, []) + [_add_b]
                 _side_b = st.multiselect("Players & picks", sorted(_team_assets[_team_b].keys()),
-                                         key=f"calc_side_b_{_team_b}", placeholder=f"Add from {_team_b}…",
+                                         key=_kb, placeholder=f"Add from {_team_b}…",
                                          label_visibility="collapsed")
 
             _tot_a = sum(_team_assets[_team_a].get(x, 0) for x in _side_a)
@@ -4139,8 +4259,10 @@ elif page == "Trade Room":
                     _verdict = f"Even trade — within {_gap_pct:.0f}% ({abs(_gap):,} apart)"
                 else:
                     _badge_bg, _badge_tx = "var(--pill-gold-bg)", "var(--pill-gold-fg)"
-                    _winner = _team_b if _gap > 0 else _team_a
-                    _verdict = f"↘ Favours {_winner} by {abs(_gap):,} ({_gap_pct:.0f}%)"
+                    # _gap = B − A; the side that SENT MORE overpays, so the OTHER side is favoured
+                    _winner = _team_a if _gap > 0 else _team_b
+                    _arrow  = "◀" if _gap > 0 else "▶"   # point at the favoured (left=A / right=B) side
+                    _verdict = f"{_arrow} Favours {_winner} by {abs(_gap):,} ({_gap_pct:.0f}%)"
                 st.markdown(
                     f"""<div style="border:1px solid var(--border); border-radius:12px; padding:16px 18px; margin-top:4px;">
                       <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
@@ -4158,6 +4280,63 @@ elif page == "Trade Room":
                     </div>""",
                     unsafe_allow_html=True,
                 )
+
+                # ── Trade Fairness: best-player premium + sweetener engine ──────────
+                if _tf_frac > 0:
+                    _sel = ([(_l, _team_meta[_team_a][_l], "a") for _l in _side_a]
+                            + [(_l, _team_meta[_team_b][_l], "b") for _l in _side_b])
+                    _players = [s for s in _sel if not s[1]["is_pick"]]
+                    _pz_l, _pz_m, _pz_side = max(_players or _sel, key=lambda x: x[1]["value"])
+                    _premium = round(_tf_frac * _pz_m["value"])
+                    _eff_a = _tot_a + (_premium if _pz_side == "a" else 0)
+                    _eff_b = _tot_b + (_premium if _pz_side == "b" else 0)
+                    _short = abs(_eff_a - _eff_b)
+                    _light_side = "a" if _eff_a < _eff_b else "b"
+                    _light_team = _team_a if _light_side == "a" else _team_b
+                    _other_team = _team_b if _light_side == "a" else _team_a
+
+                    st.markdown(
+                        f"<div style='margin-top:12px;font-size:.86rem;color:var(--text-mid);'>"
+                        f"<strong style='color:var(--text-hi);'>Premium Curve · {_tf_name}</strong> — "
+                        f"<strong>{_html.escape(_pz_m['name'])}</strong> ({_pz_m['value']:,}) is the best "
+                        f"player; a {int(_tf_frac*100)}% premium (~{_premium:,}) applies for landing it."
+                        f"</div>", unsafe_allow_html=True)
+
+                    if _short <= 0.04 * (max(_eff_a, _eff_b) or 1):
+                        st.success(f"Fair even with the premium — within ~{_short:,} of even.")
+                    else:
+                        st.warning(f"**{_light_team}** is ~**{_short:,}** light — add a piece **{_other_team}** wants.")
+                        _o_rid   = team_name_to_rid.get(_other_team)
+                        _o_needs = team_data[_o_rid]["need_scores"] if _o_rid else {}
+                        _used    = set(_side_a if _light_side == "a" else _side_b)
+                        _cands   = []
+                        for _cl, _cm in _team_meta[_light_team].items():
+                            if _cl in _used or _cm["untouchable"] or _cm["value"] <= 0:
+                                continue
+                            _nfit  = 0.5 if _cm["is_pick"] else (_o_needs.get(_cm["pos"], 0) / 100.0)
+                            _vfit  = max(0.0, 1.0 - abs(_cm["value"] - _short) / max(_short, 1))
+                            _score = _nfit * 0.5 + _vfit * 0.5
+                            if _cm["value"] > _short * 1.9:
+                                _score *= 0.35
+                            _cands.append((_score, _cl, _cm))
+                        _cands.sort(key=lambda x: x[0], reverse=True)
+                        if _cands:
+                            st.caption(f"Suggested sweeteners from **{_light_team}** — fills {_other_team}'s "
+                                       "needs, value-matched to close the gap:")
+                            for _sc, _cl, _cm in _cands[:2]:
+                                _why = ("a pick they can build with" if _cm["is_pick"]
+                                        else (f"fills their {_cm['pos']} need"
+                                              if _o_needs.get(_cm["pos"], 0) >= 20 else f"{_cm['pos']} depth"))
+                                _bc1, _bc2 = st.columns([3, 1])
+                                _bc1.markdown(
+                                    f"<div style='font-size:.86rem;padding-top:5px;'>"
+                                    f"<strong>{_html.escape(_cm['name'])}</strong> "
+                                    f"({_cm['pos']} · {_cm['value']:,}) — {_why}</div>", unsafe_allow_html=True)
+                                if _bc2.button("Add", key=f"sw_{_light_side}_{_cl}", width="stretch"):
+                                    st.session_state[f"_calc_add_{_light_side}"] = _cl
+                                    st.rerun()
+                        else:
+                            st.caption(f"No clean sweetener on {_light_team} — adjust the pieces manually.")
 
     # ── Page: Draft Room ─────────────────────────────────────────────────────────
     _frag_trade_analyzer()
