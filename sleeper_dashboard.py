@@ -3771,6 +3771,7 @@ elif page == "Trade Room":
                     "Score":      round(score) if score is not None else None,
                     "Depth":      depth_lbl,
                     "Status":     status,
+                    "_dim":       dim,
                 })
 
             # Sort: needs first (by score desc), then average, then surpluses (by score desc)
@@ -3781,16 +3782,54 @@ elif page == "Trade Room":
                 return (2, -s)
             _tbl_rows.sort(key=_tbl_sort)
 
-            st.dataframe(
-                pd.DataFrame(_tbl_rows),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Your Avg":   st.column_config.NumberColumn("Your Avg",   format="%d"),
-                    "League Avg": st.column_config.NumberColumn("League Avg", format="%d"),
-                    "Score":      st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
-                },
-            )
+            # Colored position row-cards (chip · name · your-vs-lg · track bar · pill · score).
+            # "Table view" toggle keeps the raw grid for power users.
+            _pos_meta = {  # dim → (full name, chip, pill-bg, pill-fg, accent)
+                "QB":   ("Quarterback",  "QB", "--pill-gold-bg",   "--pill-gold-fg",   "--gold"),
+                "RB":   ("Running Back",  "RB", "--pill-green-bg",  "--pill-green-fg",  "--green-bright"),
+                "WR":   ("Wide Receiver", "WR", "--pill-blue-bg",   "--pill-blue-fg",   "--blue"),
+                "TE":   ("Tight End",     "TE", "--pill-red-bg",    "--pill-red-fg",    "--red"),
+                "PICK": ("Draft Picks",   "PK", "--pill-purple-bg", "--pill-purple-fg", "--purple"),
+            }
+            if st.toggle("Table view", value=False, key="rs_table_view"):
+                st.dataframe(
+                    pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in _tbl_rows]),
+                    width="stretch", hide_index=True,
+                    column_config={
+                        "Your Avg":   st.column_config.NumberColumn("Your Avg",   format="%d"),
+                        "League Avg": st.column_config.NumberColumn("League Avg", format="%d"),
+                        "Score":      st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
+                    },
+                )
+            else:
+                _cards = []
+                for r in _tbl_rows:
+                    _name, _abbr, _pbg, _pfg, _acc = _pos_meta.get(
+                        r["_dim"], (r["Position"], r["_dim"], "--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                    _sc = r["Score"] or 0
+                    _sw = ("Need" if "Need" in r["Status"] else "Surplus" if "Surplus" in r["Status"] else "Average")
+                    _pill = (f"{r['Rank']} · {r['Depth']} · {_sw}"
+                             if r["Depth"] and r["Depth"] != "—" else f"{r['Rank']} · {_sw}")
+                    _meta = (f"{r['Your Avg']:,} vs {r['League Avg']:,} · {r['vs Avg']}"
+                             if r["Your Avg"] is not None and r["League Avg"] is not None else r["vs Avg"])
+                    _cards.append(
+                        f'<div style="display:flex;align-items:center;gap:14px;background:var(--bg-surface);'
+                        f'border:1px solid var(--border);border-radius:12px;padding:11px 16px;margin-bottom:8px;">'
+                        f'<div style="flex:0 0 auto;width:38px;height:38px;border-radius:9px;background:var({_pbg});'
+                        f'color:var({_pfg});display:flex;align-items:center;justify-content:center;font-weight:700;'
+                        f'font-size:.82rem;">{_abbr}</div>'
+                        f'<div style="flex:1;min-width:0;">'
+                        f'<div style="font-size:.95rem;color:var(--text-hi);margin-bottom:6px;">'
+                        f'<strong>{_name}</strong>&nbsp;&nbsp;'
+                        f'<span style="font-size:.8rem;color:var(--text-mid);">{_meta}</span></div>'
+                        f'<div style="height:8px;border-radius:4px;background:var(--bg-hover);overflow:hidden;">'
+                        f'<div style="height:8px;width:{_sc}%;background:var({_acc});border-radius:4px;"></div></div></div>'
+                        f'<div style="flex:0 0 auto;"><span style="background:var({_pbg});color:var({_pfg});'
+                        f'font-size:.72rem;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;">{_pill}</span></div>'
+                        f'<div style="flex:0 0 auto;min-width:34px;text-align:right;font-family:\'Space Grotesk\',sans-serif;'
+                        f'font-weight:700;font-size:1.4rem;color:var({_acc});">{_sc}</div>'
+                        f'</div>')
+                st.markdown("".join(_cards), unsafe_allow_html=True)
 
             # ── Full breakdown table ───────────────────────────────────────────────────
             with st.expander("Full positional breakdown (players + picks)", expanded=False):
