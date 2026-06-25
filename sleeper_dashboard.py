@@ -237,6 +237,14 @@ hr{ border-color:var(--border); }
 .pill.red{ background:var(--pill-red-bg); color:var(--pill-red-fg); }
 .pill.blue{ background:var(--pill-blue-bg); color:var(--pill-blue-fg); }
 .pill.purple{ background:var(--pill-purple-bg); color:var(--pill-purple-fg); }
+
+/* ── Draft Room war-room: pulsing dot + live-state pills ────────────────────── */
+@keyframes dlh-pulse{ 0%{transform:scale(1);opacity:1;} 50%{transform:scale(1.6);opacity:.35;} 100%{transform:scale(1);opacity:1;} }
+@keyframes dlh-glow{ 0%,100%{opacity:1;} 50%{opacity:.55;} }
+.dlh-dot{ display:inline-block; width:9px; height:9px; border-radius:50%;
+  background:var(--gold); animation:dlh-pulse 1.3s ease-in-out infinite; }
+.dlh-dot.green{ background:var(--green-bright); }
+.dlh-live-pill{ animation:dlh-glow 1.3s ease-in-out infinite; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -4571,14 +4579,14 @@ elif page == "Draft Room":
     rookie_names = sorted([r["name"] for r in fc_rookies if r.get("name")])
 
     # ── Simulation control: Need Reach Limit (shared with Settings) ───────────
-    st.caption("**Need Reach Limit** — how far a team reaches for positional need over Best Player "
-               "Available. 0% = pure BPA · 40% = heavily need-driven. Also adjustable in Settings.")
-    need_reach_limit = st.slider(
-        "Need Reach Limit", min_value=0, max_value=40, value=15, step=5,
-        format="%d%%", key="reach_limit_pct",
-    ) / 100
-    _mode = "Strict (near-BPA)" if need_reach_limit < 0.10 else ("Balanced" if need_reach_limit <= 0.20 else "Need-heavy (aggressive reaches)")
-    st.caption(f"Mode: **{_mode}** at {int(need_reach_limit * 100)}%")
+    # Read the persisted value up front so the simulation below uses it; the actual
+    # slider widget renders inside the "Edit settings" strip after the sim (so it
+    # doesn't dominate the top of the war room). Same session key as the Settings page.
+    _reach_pct       = int(st.session_state.get("reach_limit_pct", 15))
+    need_reach_limit = _reach_pct / 100
+    _mode = ("Strict" if need_reach_limit < 0.10
+             else "Balanced" if need_reach_limit <= 0.20
+             else "Need-heavy")
 
     # ── Build sorted picks list for current year ──────────────────────────────
     df_all_picks = build_picks_df(rosters, users, traded_ownership, drafts, slot_map, fc_picks)
@@ -4724,85 +4732,173 @@ elif page == "Draft Room":
 
     rookie_sels = run_simulation(picks_for_sim, confirmed)
 
-    # ── Build editable draft board df (always sorted 1.01 → N.12) ────────────
-    draft_rows = []
-    for _, row in df_cur.iterrows():
-        pick   = row["Pick"]
-        sel    = rookie_sels.get(pick, {})
-        is_confirmed = pick in confirmed
-        draft_rows.append({
-            "Pick":            pick,
-            "Team":            row["Team"],
-            "Pick FC Value":   row["Value"],
-            "Est. Rookie":     sel.get("name", "—"),
-            "Pos":             sel.get("pos",  "—"),
-            "Rookie FC Val":   sel.get("value"),
-            "Logic":           sel.get("reason", "—"),
-            "Pick Made":       is_confirmed,
-            "Rookie Selected": confirmed.get(pick, ""),
-        })
+    # ── War-room header ───────────────────────────────────────────────────────
+    _hdr_l, _hdr_r = st.columns([4, 1.1], vertical_alignment="center")
+    _hdr_l.markdown(
+        f'<div style="display:flex;align-items:center;gap:13px;flex-wrap:wrap;">'
+        f'<span style="font-family:\'Space Grotesk\',sans-serif;font-size:30px;font-weight:700;'
+        f'color:var(--text-hi);line-height:1;">{curr_year} Draft Room</span>'
+        f'<span class="pill green dlh-live-pill" style="display:inline-flex;align-items:center;gap:6px;">'
+        f'<span class="dlh-dot green"></span>War Room Active</span></div>',
+        unsafe_allow_html=True)
+    if _hdr_r.button("Update Estimates", key="dr_update", width="stretch", type="primary",
+                     help="Re-run the draft simulation for every unselected pick with the current settings."):
+        st.rerun()
 
-    df_board = pd.DataFrame(draft_rows)
+    # ── Settings strip (slider tucked behind "Edit settings", not dominating the top) ──
+    st.markdown(
+        f'<div style="margin:4px 0 2px;color:var(--text-mid);font-size:.86rem;">'
+        f'Mode: <strong style="color:var(--text-hi);">{_mode}</strong>'
+        f'&nbsp;·&nbsp; Need Reach: <strong style="color:var(--text-hi);">{_reach_pct}%</strong>'
+        f'&nbsp;·&nbsp; Value source: <strong style="color:var(--text-hi);">{vs_label(value_source)}</strong></div>',
+        unsafe_allow_html=True)
+    with st.expander("Edit settings"):
+        st.caption("**Need Reach Limit** — how far a team reaches for positional need over Best "
+                   "Player Available. 0% = pure BPA · 40% = heavily need-driven. Shared with Settings.")
+        st.slider("Need Reach Limit", min_value=0, max_value=40, value=15, step=5,
+                  format="%d%%", key="reach_limit_pct", label_visibility="collapsed")
 
-    # ── Draft board ───────────────────────────────────────────────────────────
-    st.subheader(f"{curr_year} Draft Board")
-    st.caption("Pick a rookie under **Rookie Selected** to lock that pick — the board saves and "
-               "re-estimates the remaining picks automatically. Toggling **Pick Made** on its own "
-               "no longer reloads the whole board.")
+    # ── On-the-clock alert ──────────────────────────────────────────────────────
+    ordered_picks = list(df_cur["Pick"])
+    _pick_team    = dict(zip(df_cur["Pick"], df_cur["Team"]))
+    _unconfirmed  = [p for p in ordered_picks if p not in confirmed]
+    on_clock_pick = _unconfirmed[0] if _unconfirmed else None
+    on_deck_pick  = _unconfirmed[1] if len(_unconfirmed) > 1 else None
+    my_next_pick  = next((p for p in _unconfirmed if _pick_team.get(p) == my_team), None) if my_team else None
 
-    # The editor lives in a fragment so per-cell edits rerun ONLY the fragment, not the
-    # whole page (which would re-run the heavy draft simulation and make the grid "reload").
-    # We trigger a full recompute + persist only when the set of selected rookies actually
-    # changes — i.e. when a Rookie is selected — never on a bare Pick Made toggle.
+    if my_next_pick:
+        _n         = _unconfirmed.index(my_next_pick)        # picks you wait through
+        _deck_team = _pick_team.get(on_deck_pick, "").strip() if on_deck_pick else ""
+        if _n == 0:
+            _msg = f"You are <strong>on the clock</strong> now — your pick is <strong>{my_next_pick}</strong>"
+        else:
+            _msg = (f"Your pick (<strong>{my_next_pick}</strong>) is coming up in "
+                    f"<strong>{plural(_n, 'pick')}</strong>")
+            if _deck_team:
+                _msg += f" — {_deck_team} is on deck"
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:12px;margin:14px 0 8px;'
+            f'background:var(--pill-gold-bg);border:1px solid var(--gold);border-left:4px solid var(--gold);'
+            f'border-radius:10px;padding:12px 16px;">'
+            f'<span class="dlh-dot"></span>'
+            f'<span style="color:var(--pill-gold-fg);font-size:.95rem;">{_msg}</span></div>',
+            unsafe_allow_html=True)
+    elif not my_team:
+        st.info("Pick your team in Settings to get a live on-the-clock alert for your picks.",
+                icon=":material/sports_football:")
+    elif not _unconfirmed:
+        st.success("Every pick on the board is locked — draft complete.", icon=":material/check_circle:")
+
+    # ── Draft board — styled war-room rows (not a dataframe) ─────────────────────
+    st.markdown('<div class="eyebrow" style="margin:16px 0 4px;">Draft Board</div>', unsafe_allow_html=True)
+    st.caption("Use **Select** on any upcoming pick to lock the rookie taken — the board saves and "
+               "re-estimates the remaining picks automatically (no full reload). Your picks carry a "
+               "green rail so they're easy to find.")
+
+    def _pos_chip(pos):
+        _pbg, _pfg, _ = POS_PALETTE.get(pos if pos in POS_PALETTE else "PICK",
+                                        ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+        _label = POS_ABBR.get(pos, pos) if pos and pos != "—" else "—"
+        return (f'<span style="display:inline-block;min-width:30px;text-align:center;background:var({_pbg});'
+                f'color:var({_pfg});font-weight:700;font-size:.66rem;padding:3px 6px;border-radius:6px;">{_label}</span>')
+
+    # The board lives in a fragment so a rookie selection reruns ONLY the fragment first
+    # (fast — skips the heavy sim at the top of the page); we then trigger one controlled
+    # full rerun to re-estimate downstream picks. Same no-double-full-reload contract as the
+    # old data_editor (B5 fix) — only the visual layer changed from a dataframe to rows.
     @st.fragment
     def _draft_board_fragment():
-        _board_data = df_board
-        if my_team and (df_board["Team"] == my_team).any():
-            _dr_hl = "background-color: rgba(255, 196, 0, 0.18)"
-            _board_data = df_board.style.apply(
-                lambda row: [_dr_hl if row["Team"] == my_team else "" for _ in row], axis=1
+        # Column header
+        st.markdown(
+            '<div style="display:flex;align-items:center;gap:10px;padding:2px 14px 4px 17px;'
+            'font:600 11px/1 \'Inter\',sans-serif;letter-spacing:1px;text-transform:uppercase;'
+            'color:var(--text-low);">'
+            '<span style="flex:0 0 50px;">Pick</span>'
+            '<span style="flex:0 0 150px;">Team</span>'
+            '<span style="flex:1;">Est. Rookie</span>'
+            '<span style="flex:0 0 46px;text-align:center;">Pos</span>'
+            '<span style="flex:0 0 64px;text-align:right;">FC Val</span>'
+            '<span style="flex:1.3;padding-left:12px;">Logic</span>'
+            '</div>', unsafe_allow_html=True)
+
+        _opts = [""] + rookie_names
+        for _, row in df_cur.iterrows():
+            pick   = row["Pick"]
+            team   = (row["Team"] or "").strip()
+            sel    = rookie_sels.get(pick, {})
+            locked = pick in confirmed
+            is_you = bool(my_team) and row["Team"] == my_team
+            is_clk = (pick == on_clock_pick)
+
+            est_name = (confirmed.get(pick) if locked else sel.get("name")) or "—"
+            pos      = sel.get("pos", "—")
+            fcval    = sel.get("value")
+            logic    = sel.get("reason", "—") if not locked else "Confirmed"
+
+            if locked:
+                _bg, _rail = "var(--bg-inset)", "transparent"
+                _team_col, _txt, _pick_col = "var(--text-mid)", "var(--text-mid)", "var(--text-low)"
+                _state = '<span class="pill green" style="font-size:.64rem;padding:2px 9px;">&#10003; Locked</span>'
+            elif is_clk:
+                _bg, _rail = "var(--pill-gold-bg)", "var(--gold)"
+                _team_col, _txt, _pick_col = "var(--pill-gold-fg)", "var(--text-hi)", "var(--pill-gold-fg)"
+                _state = ('<span class="pill gold dlh-live-pill" style="font-size:.64rem;padding:2px 9px;'
+                          'display:inline-flex;align-items:center;gap:5px;"><span class="dlh-dot"></span>On Clock</span>')
+            elif is_you:
+                _bg, _rail = "var(--row-you-bg)", "var(--green-bright)"
+                _team_col, _txt, _pick_col = "var(--green-bright)", "var(--text-hi)", "var(--green-bright)"
+                _state = ''
+            else:
+                _bg, _rail = "var(--bg-surface)", "transparent"
+                _team_col, _txt, _pick_col = "var(--text-body)", "var(--text-hi)", "var(--text-mid)"
+                _state = ''
+
+            _fcval_s = f"{int(fcval):,}" if (fcval is not None and pd.notna(fcval)) else "—"
+
+            c_info, c_sel = st.columns([6, 1.15], vertical_alignment="center")
+            c_info.markdown(
+                f'<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;margin:3px 0;'
+                f'border-radius:8px;background:{_bg};border-left:3px solid {_rail};">'
+                f'<span style="flex:0 0 50px;font-weight:700;color:{_pick_col};">{pick}</span>'
+                f'<span style="flex:0 0 150px;font-weight:600;color:{_team_col};overflow:hidden;'
+                f'text-overflow:ellipsis;white-space:nowrap;">{team}</span>'
+                f'<span style="flex:1;color:{_txt};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{est_name}</span>'
+                f'<span style="flex:0 0 46px;text-align:center;">{_pos_chip(pos)}</span>'
+                f'<span style="flex:0 0 64px;text-align:right;color:var(--text-mid);font-variant-numeric:tabular-nums;">{_fcval_s}</span>'
+                f'<span style="flex:1.3;padding-left:12px;color:var(--text-mid);font-size:.82rem;'
+                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{logic}</span>'
+                f'<span style="flex:0 0 auto;">{_state}</span>'
+                f'</div>', unsafe_allow_html=True)
+
+            _safe = pick.replace(".", "_")
+            _idx  = _opts.index(confirmed[pick]) if (locked and confirmed.get(pick) in _opts) else 0
+            _empty_lbl = "Select rookie ▾" if is_you else "Select ▾"
+            c_sel.selectbox(
+                f"Select rookie for pick {pick}", _opts, index=_idx,
+                key=f"dr_sel_{_safe}", label_visibility="collapsed",
+                format_func=lambda x, _e=_empty_lbl: _e if x == "" else x,
             )
 
-        edited = st.data_editor(
-            _board_data,
-            width="stretch",
-            hide_index=True,
-            key="draft_board_editor",
-            column_config={
-                "Pick Made":       st.column_config.CheckboxColumn("Pick Made",       default=False),
-                "Rookie Selected": st.column_config.SelectboxColumn(
-                    "Rookie Selected",
-                    options=[""] + rookie_names,
-                    default="",
-                ),
-                "Pick FC Value":   COL_CFG["Pick FC Value"],
-                "Rookie FC Val":   COL_CFG["Rookie FC Val"],
-            },
-            disabled=["Pick", "Team", "Pick FC Value", "Est. Rookie", "Pos", "Rookie FC Val", "Logic"],
-        )
+        # Confirmed picks are driven by the per-row selectboxes alone.
+        _new_confirmed = {}
+        for pick in ordered_picks:
+            _v = st.session_state.get(f"dr_sel_{pick.replace('.', '_')}")
+            if _v:
+                _new_confirmed[pick] = _v
 
-        # Confirmed picks are driven by the "Rookie Selected" column alone.
-        _new_confirmed = {
-            row["Pick"]: row["Rookie Selected"]
-            for _, row in edited.iterrows() if row.get("Rookie Selected")
-        }
-
-        btn_c1, btn_c2, _ = st.columns([1, 1, 4])
-        _do_update = btn_c1.button("Update Estimates", key="dr_update", width="stretch",
-                                   help="Re-estimate the unselected picks. The board also updates "
-                                        "automatically whenever you select a rookie.")
-        _do_clear  = btn_c2.button("Clear All", key="dr_clear", width="stretch")
-        if _do_clear:
+        if st.button("Clear board", key="dr_clear"):
+            for pick in ordered_picks:
+                st.session_state.pop(f"dr_sel_{pick.replace('.', '_')}", None)
             st.session_state.draft_confirmed = {}
             clear_draft_selections(league_id)
             st.rerun()   # full app rerun → re-run the simulation with a clean board
-        elif _do_update or _new_confirmed != st.session_state.draft_confirmed:
-            # A rookie was selected/changed (or Update pressed) → persist + recompute
+        elif _new_confirmed != st.session_state.draft_confirmed:
+            # A rookie was selected/changed → persist + recompute the downstream board
             st.session_state.draft_confirmed = _new_confirmed
             save_draft_selections(league_id, _new_confirmed)
             st.rerun()
 
-        st.caption(f"{len(_new_confirmed)} confirmed · {len(df_board) - len(_new_confirmed)} estimated · "
+        st.caption(f"{len(_new_confirmed)} confirmed · {len(df_cur) - len(_new_confirmed)} estimated · "
                    "your draft is saved automatically")
 
     _draft_board_fragment()
