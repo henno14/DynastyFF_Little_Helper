@@ -1413,6 +1413,20 @@ TF_PRESETS = {"Off": 0.0, "Light": 0.10, "Standard": 0.18, "Heavy": 0.28}
 TF_NAMES   = list(TF_PRESETS)
 
 
+# Position colour palette — ONE consistent scheme across every screen (chip / bar /
+# pill / score). TE = purple; picks = neutral grey so it never clashes with TE.
+POS_PALETTE = {  # dim → (pill-bg token, pill-fg token, accent token)
+    "QB":   ("--pill-gold-bg",   "--pill-gold-fg",   "--gold"),
+    "RB":   ("--pill-green-bg",  "--pill-green-fg",  "--green-bright"),
+    "WR":   ("--pill-blue-bg",   "--pill-blue-fg",   "--blue"),
+    "TE":   ("--pill-purple-bg", "--pill-purple-fg", "--purple"),
+    "PICK": ("--bg-raised",      "--text-mid",       "--text-mid"),
+}
+POS_FULLNAME = {"QB": "Quarterback", "RB": "Running Back", "WR": "Wide Receiver",
+                "TE": "Tight End", "PICK": "Draft Picks"}
+POS_ABBR = {"QB": "QB", "RB": "RB", "WR": "WR", "TE": "TE", "PICK": "PK"}
+
+
 def compute_pos_weights(scoring, enabled):
     """Per-position value multipliers derived from league scoring. The value sources
     (FantasyCalc et al.) already price Superflex/2QB and PPR, so the genuine gap they
@@ -1928,16 +1942,35 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
     # Panel 2 — Trade Needs
     with c1:
         st.markdown("#### :material/explore: Top Trade Needs")
-        needs = sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])[:3]
+        needs = [(p, s) for p, s in sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])[:3]
+                 if s and s > 0]
         if needs:
             n_teams = len(team_data)
-            _rows = [{"Pos": pos, "Need": f"{score:.0f}",
-                      "Your Avg": round(td.get("pos_avgs", {}).get(pos) or 0),
-                      "Lg Avg": round(league_avgs.get(pos) or 0),
-                      "Rank": f"{td.get('pos_league_rank', {}).get(pos)}/{n_teams}"
-                              if td.get("pos_league_rank", {}).get(pos) else "—"}
-                     for pos, score in needs]
-            st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
+            _cards = []
+            for pos, score in needs:
+                _pbg, _pfg, _acc = POS_PALETTE.get(pos, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                _your = round(td.get("pos_avgs", {}).get(pos) or 0)
+                _lg   = round(league_avgs.get(pos) or 0)
+                _rel  = td.get("relative", {}).get(pos)
+                _rank = td.get("pos_league_rank", {}).get(pos)
+                _meta = f"{_your:,} vs {_lg:,}" + (f" · {_rel:+.0f}%" if _rel is not None else "")
+                _rk   = f" #{_rank}/{n_teams}" if _rank else ""
+                _cards.append(
+                    f'<div style="display:flex;align-items:center;gap:11px;background:var(--bg-surface);'
+                    f'border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:7px;">'
+                    f'<div style="flex:0 0 auto;width:32px;height:32px;border-radius:8px;background:var({_pbg});'
+                    f'color:var({_pfg});display:flex;align-items:center;justify-content:center;font-weight:700;'
+                    f'font-size:.76rem;">{POS_ABBR.get(pos, pos)}</div>'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<div style="font-size:.86rem;color:var(--text-hi);margin-bottom:5px;">'
+                    f'<strong>{POS_FULLNAME.get(pos, pos)}</strong> '
+                    f'<span style="font-size:.74rem;color:var(--text-mid);">{_meta}</span></div>'
+                    f'<div style="height:6px;border-radius:3px;background:var(--bg-hover);overflow:hidden;">'
+                    f'<div style="height:6px;width:{min(100, round(score))}%;background:var({_acc});border-radius:3px;"></div></div></div>'
+                    f'<div style="flex:0 0 auto;"><span style="background:var(--pill-red-bg);color:var(--pill-red-fg);'
+                    f'font-size:.68rem;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap;">Need{_rk}</span></div>'
+                    f'</div>')
+            st.markdown("".join(_cards), unsafe_allow_html=True)
         else:
             st.caption("No clear needs — roster is balanced.")
 
@@ -1950,63 +1983,86 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                        if t == "Untouchable"}
         _partners = rank_trade_partners(rid, td, team_data, _untouch, _bp_need, _bp_surplus)
         if _partners and _partners[0]["_give_val"] and _partners[0]["_get_val"]:
-            bp  = _partners[0]
+            bp = _partners[0]
             _gv, _tv = bp["_give_val"], bp["_get_val"]
-            _gap = bp["_gap_pct"]                       # value gap % of the balanced 1-for-1
-            _diff = _tv - _gv                           # + = you come out ahead on value
-            _pa   = round(_gv / (_gv + _tv) * 100)
-            if _gap <= 8:
-                _bg, _tx, _verdict = "var(--pill-green-bg)", "var(--pill-green-fg)", f"Even · {_gap}% gap"
-            else:
-                _bg, _tx = "var(--pill-gold-bg)", "var(--pill-gold-fg)"
-                _verdict = (f"↗ Favours you · {abs(_diff):,}" if _diff > 0
-                            else f"↘ Favours them · {abs(_diff):,}")
-            st.markdown(
-                f"**{_html.escape(bp['Team'])}** — they need your **{_bp_surplus}**, "
-                f"you want a **{_bp_need}**", unsafe_allow_html=True)
-            # Trade-Calculator-style card: You send | verdict | You get + value bar
-            st.markdown(
-                f"""<div style="border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-top:4px;">
-                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:11px; gap:8px;">
-                    <div><div style="font-size:0.66rem; color:var(--pill-blue-fg); text-transform:uppercase; letter-spacing:.06em;">You send</div>
-                         <div style="font-size:1.35rem; font-weight:700; color:var(--text-hi); line-height:1.1;">{_gv:,}</div></div>
-                    <div style="text-align:center;">
-                         <span style="background:{_bg}; color:{_tx}; padding:5px 11px; border-radius:14px; font-size:0.76rem; font-weight:600; white-space:nowrap;">{_verdict}</span></div>
-                    <div style="text-align:right;"><div style="font-size:0.66rem; color:var(--pill-purple-fg); text-transform:uppercase; letter-spacing:.06em;">You get</div>
-                         <div style="font-size:1.35rem; font-weight:700; color:var(--text-hi); line-height:1.1;">{_tv:,}</div></div>
-                  </div>
-                  <div style="display:flex; height:18px; border-radius:6px; overflow:hidden; font-size:0.72rem; font-weight:600;">
-                    <div style="width:{_pa}%; background:var(--blue); color:#04210F; display:flex; align-items:center; justify-content:center;">{_pa}%</div>
-                    <div style="width:{100 - _pa}%; background:var(--purple); color:#04210F; display:flex; align-items:center; justify-content:center;">{100 - _pa}%</div>
-                  </div>
-                </div>""", unsafe_allow_html=True)
-            # Build the "right" trade: apply the Premium Curve, then suggest the piece the
-            # lighter side adds to even it (same engine as the Trade Calculator).
-            _pc_name  = st.session_state.get("trade_fairness", "Off")
-            _pc_frac  = TF_PRESETS.get(_pc_name, 0.0)
-            _prem     = round(_pc_frac * max(_gv, _tv))
-            _eff_you  = _gv + (_prem if _gv >= _tv else 0)
-            _eff_them = _tv + (_prem if _tv >  _gv else 0)
-            _short    = abs(_eff_you - _eff_them)
-            _bp_rid   = team_name_to_rid.get(bp["Team"])
-            _line = (f"Send **{_html.escape(bp['_give_name'])}** ({_bp_surplus}) · "
-                     f"get **{_html.escape(bp['_get_name'])}** ({_bp_need})")
+            _bp_rid  = team_name_to_rid.get(bp["Team"])
+            send_pieces = [(bp["_give_name"], _bp_surplus, _gv)]
+            get_pieces  = [(bp["_get_name"],  _bp_need,    _tv)]
+            # Premium Curve -> balancing sweetener on the lighter side (same engine as the calc)
+            _pc_name = st.session_state.get("trade_fairness", "Off")
+            _pc_frac = TF_PRESETS.get(_pc_name, 0.0)
+            _prem    = round(_pc_frac * max(_gv, _tv))
+            _eff_you = _gv + (_prem if _gv >= _tv else 0)
+            _eff_them = _tv + (_prem if _tv > _gv else 0)
+            _short   = abs(_eff_you - _eff_them)
             if _short > 0.05 * (max(_eff_you, _eff_them) or 1):
-                if _eff_you > _eff_them:        # you give more → THEY add a piece you need
+                if _eff_you > _eff_them:
                     _sw = suggest_sweetener(team_data, _bp_rid, td.get("need_scores", {}),
                                             _short, exclude_names={bp["_get_name"]})
-                    if _sw:
-                        _line += (f" **+ they add {_html.escape(_sw['name'])}** "
-                                  f"({_sw['pos']} · {_sw['value']:,})")
-                else:                          # you give less → YOU add a piece they need
-                    _their_needs = team_data[_bp_rid].get("need_scores", {}) if _bp_rid else {}
-                    _sw = suggest_sweetener(team_data, rid, _their_needs, _short,
+                    if _sw: get_pieces.append((_sw["name"], _sw["pos"], _sw["value"]))
+                else:
+                    _tn = team_data[_bp_rid].get("need_scores", {}) if _bp_rid else {}
+                    _sw = suggest_sweetener(team_data, rid, _tn, _short,
                                             exclude_names={bp["_give_name"]}, untouchable=_untouch)
-                    if _sw:
-                        _line += (f" **+ you add {_html.escape(_sw['name'])}** "
-                                  f"({_sw['pos']} · {_sw['value']:,})")
-            _pc_tag = f" · Premium Curve: {_pc_name}" if _pc_frac > 0 else ""
-            st.caption(_line + f" — refine in the Trade Room{_pc_tag}.")
+                    if _sw: send_pieces.append((_sw["name"], _sw["pos"], _sw["value"]))
+            _send_tot = sum(p[2] for p in send_pieces)
+            _get_tot  = sum(p[2] for p in get_pieces)
+            _diff = _get_tot - _send_tot
+            _pa   = round(_send_tot / ((_send_tot + _get_tot) or 1) * 100)
+            if abs(_diff) <= 0.05 * max(_send_tot, _get_tot, 1):
+                _vbg, _vfg, _verdict = "var(--pill-green-bg)", "var(--pill-green-fg)", f"Fair . ±{abs(_diff):,}"
+            else:
+                _vbg, _vfg = "var(--pill-gold-bg)", "var(--pill-gold-fg)"
+                _verdict = (f"Favours you . +{_diff:,}" if _diff > 0 else f"Favours them . {_diff:,}")
+
+            st.markdown(f"**{_html.escape(bp['Team'])}** — they need your **{_bp_surplus}**, "
+                        f"you want a **{_bp_need}**", unsafe_allow_html=True)
+
+            def _piece_rows(pieces):
+                _h = ""
+                for _nm, _ps, _vl in pieces:
+                    _b, _f, _a = POS_PALETTE.get(_ps, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                    _h += (f'<div style="display:flex;align-items:center;gap:8px;margin-top:7px;">'
+                           f'<span style="flex:0 0 auto;width:28px;height:20px;border-radius:6px;background:var({_b});'
+                           f'color:var({_f});display:flex;align-items:center;justify-content:center;font-size:.62rem;font-weight:700;">'
+                           f'{POS_ABBR.get(_ps, _ps)}</span>'
+                           f'<span style="flex:1;min-width:0;font-size:.82rem;color:var(--text-hi);overflow:hidden;'
+                           f'text-overflow:ellipsis;white-space:nowrap;">{_html.escape(_nm)}</span>'
+                           f'<span style="flex:0 0 auto;font-size:.78rem;color:var(--text-mid);">{_vl:,}</span></div>')
+                return _h
+
+            _scA, _scB = st.columns(2)
+            _scA.markdown(
+                f'<div style="border:1px solid var(--border);border-radius:10px;padding:11px 12px;">'
+                f'<div class="eyebrow" style="color:var(--pill-red-fg);">You send</div>'
+                f'<div style="font-size:1.25rem;font-weight:700;color:var(--text-hi);">{_send_tot:,}</div>'
+                f'{_piece_rows(send_pieces)}</div>', unsafe_allow_html=True)
+            _scB.markdown(
+                f'<div style="border:1px solid var(--border);border-radius:10px;padding:11px 12px;">'
+                f'<div class="eyebrow" style="color:var(--pill-green-fg);">You get</div>'
+                f'<div style="font-size:1.25rem;font-weight:700;color:var(--text-hi);">{_get_tot:,}</div>'
+                f'{_piece_rows(get_pieces)}</div>', unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div style="margin-top:9px;"><div style="display:flex;height:16px;border-radius:5px;overflow:hidden;'
+                f'font-size:.66rem;font-weight:600;">'
+                f'<div style="width:{_pa}%;background:var(--red);color:#2a0a0a;display:flex;align-items:center;justify-content:center;">{_pa}%</div>'
+                f'<div style="width:{100 - _pa}%;background:var(--green);color:#04210F;display:flex;align-items:center;justify-content:center;">{100 - _pa}%</div></div>'
+                f'<div style="text-align:center;margin-top:7px;"><span style="background:{_vbg};color:{_vfg};'
+                f'font-size:.74rem;font-weight:600;padding:3px 12px;border-radius:999px;">{_verdict}</span></div></div>',
+                unsafe_allow_html=True)
+
+            if st.button("Refine in Trade Room →", key="bp_refine", type="primary", width="stretch"):
+                def _lbl(nm, ps, vl): return f"{nm}  ({'Pick' if ps == 'PICK' else ps}) — {vl:,}"
+                st.session_state["_tb_preload"] = {
+                    "team_a": my_team, "team_b": bp["Team"],
+                    "side_a": [_lbl(*p) for p in send_pieces],
+                    "side_b": [_lbl(*p) for p in get_pieces],
+                }
+                st.session_state.nav_page = "Trade Room"
+                st.rerun()
+            if _pc_frac > 0:
+                st.caption(f"Premium Curve **{_pc_name}** applied to the balance.")
         else:
             st.caption("No clean value-matched partner right now — see the Trade Room for options.")
 
@@ -3652,6 +3708,15 @@ elif page == "Trade Room":
         rid = team_name_to_rid[sel_ta_team]
         td  = team_data[rid]
 
+        # Consume an Overview "Refine in Trade Room" deep-link → preload the Trade Builder
+        _pl = st.session_state.pop("_tb_preload", None)
+        if _pl:
+            st.session_state["calc_team_a"] = _pl["team_a"]
+            st.session_state["calc_team_b"] = _pl["team_b"]
+            st.session_state[f"calc_side_a_{_pl['team_a']}"] = _pl["side_a"]
+            st.session_state[f"calc_side_b_{_pl['team_b']}"] = _pl["side_b"]
+            st.success("Trade loaded into **Trade Builder** — open that tab to refine the pieces.")
+
         # Set of Untouchable player names for THIS team — excluded from all trade-away lists
         _player_tags = st.session_state.player_tags
         _untouchable = {
@@ -3784,13 +3849,6 @@ elif page == "Trade Room":
 
             # Colored position row-cards (chip · name · your-vs-lg · track bar · pill · score).
             # "Table view" toggle keeps the raw grid for power users.
-            _pos_meta = {  # dim → (full name, chip, pill-bg, pill-fg, accent)
-                "QB":   ("Quarterback",  "QB", "--pill-gold-bg",   "--pill-gold-fg",   "--gold"),
-                "RB":   ("Running Back",  "RB", "--pill-green-bg",  "--pill-green-fg",  "--green-bright"),
-                "WR":   ("Wide Receiver", "WR", "--pill-blue-bg",   "--pill-blue-fg",   "--blue"),
-                "TE":   ("Tight End",     "TE", "--pill-red-bg",    "--pill-red-fg",    "--red"),
-                "PICK": ("Draft Picks",   "PK", "--pill-purple-bg", "--pill-purple-fg", "--purple"),
-            }
             if st.toggle("Table view", value=False, key="rs_table_view"):
                 st.dataframe(
                     pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in _tbl_rows]),
@@ -3804,8 +3862,9 @@ elif page == "Trade Room":
             else:
                 _cards = []
                 for r in _tbl_rows:
-                    _name, _abbr, _pbg, _pfg, _acc = _pos_meta.get(
-                        r["_dim"], (r["Position"], r["_dim"], "--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                    _name = POS_FULLNAME.get(r["_dim"], r["Position"])
+                    _abbr = POS_ABBR.get(r["_dim"], r["_dim"])
+                    _pbg, _pfg, _acc = POS_PALETTE.get(r["_dim"], ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
                     _sc = r["Score"] or 0
                     _sw = ("Need" if "Need" in r["Status"] else "Surplus" if "Surplus" in r["Status"] else "Average")
                     _pill = (f"{r['Rank']} · {r['Depth']} · {_sw}"
@@ -4152,11 +4211,16 @@ elif page == "Trade Room":
             _all_teams = sorted(_team_assets.keys())
             _a_default = my_team if my_team in _all_teams else _all_teams[0]
             _b_default = next((t for t in _all_teams if t != _a_default), _all_teams[0])
+            # Seed via session_state (no index=) so the Overview deep-link can preload teams
+            if st.session_state.get("calc_team_a") not in _all_teams:
+                st.session_state.calc_team_a = _a_default
+            if st.session_state.get("calc_team_b") not in _all_teams:
+                st.session_state.calc_team_b = _b_default
 
             _cc1, _cc2 = st.columns(2)
             with _cc1:
                 st.markdown("<span style='color:var(--blue); font-weight:600;'>◀ Side A sends</span>", unsafe_allow_html=True)
-                _team_a = st.selectbox("Team A", _all_teams, index=_all_teams.index(_a_default),
+                _team_a = st.selectbox("Team A", _all_teams,
                                        key="calc_team_a", label_visibility="collapsed")
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:9px;margin:2px 0 8px;">'
@@ -4173,7 +4237,7 @@ elif page == "Trade Room":
                                          label_visibility="collapsed")
             with _cc2:
                 st.markdown("<span style='color:var(--purple); font-weight:600;'>Side B sends ▶</span>", unsafe_allow_html=True)
-                _team_b = st.selectbox("Team B", _all_teams, index=_all_teams.index(_b_default),
+                _team_b = st.selectbox("Team B", _all_teams,
                                        key="calc_team_b", label_visibility="collapsed")
                 st.markdown(
                     f'<div style="display:flex;align-items:center;gap:9px;margin:2px 0 8px;">'
