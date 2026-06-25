@@ -3684,7 +3684,7 @@ elif page == "Trade Room":
                 column_config={val_col: COL_CFG["Value"]},
             )
 
-        _tr_tabs = st.tabs(["Positional Strength", "Best Trade Partners", "Trade Analysis", "Suggestions", "Defensive Strength", "Trade Calculator"])
+        _tr_tabs = st.tabs(["Roster Strength", "Trade Partners", "Trade Builder", "Suggestions"])
 
         with _tr_tabs[0]:
             # ── Positional strength — summary banner + detail table ──────────────────
@@ -3840,6 +3840,63 @@ elif page == "Trade Room":
                         "League Avg": COL_CFG["League Avg"],
                     },
                 )
+
+            st.divider()
+            # ── Section B: Defensive Strength (IDP/DEF) ───────────────────────────────
+            st.subheader("Defensive Strength (IDP / DEF)")
+            st.caption(
+                "Pools DL + LB + DB + DEF positions. Ranked by average 2025 fantasy points "
+                "(league scoring), compared to the league average. Kickers excluded."
+            )
+
+            team_def_entry = def_analysis.get(rid, {})
+            def_avg_pts    = team_def_entry.get("avg_pts", 0)
+            def_count      = team_def_entry.get("player_count", 0)
+            def_rel        = (def_avg_pts - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
+            def_suffix     = "▲ Surplus" if def_rel >= 5 else ("▼ Need" if def_rel <= -5 else "~ Average")
+
+            d1, d2, d3 = st.columns(3)
+            d1.metric(
+                label=f"DEF Avg Pts  ({def_suffix})",
+                value=f"{def_avg_pts:.1f}",
+                delta=f"{def_rel:+.1f}% vs league avg ({league_def_avg:.1f})",
+                delta_color="normal",
+            )
+            d2.metric("IDP/DEF Players on Roster", def_count)
+            d3.metric("League DEF Avg Pts", f"{league_def_avg:.1f}")
+
+            # League-wide DEF ranking table
+            with st.expander("Full league DEF ranking", expanded=True):
+                def_rows = []
+                for r2id, de in def_analysis.items():
+                    r2_rel = (de["avg_pts"] - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
+                    def_rows.append({
+                        "Team":       de["name"],
+                        "Avg Pts":    round(de["avg_pts"], 1),
+                        "Players":    de["player_count"],
+                        "vs League":  f"{r2_rel:+.1f}%",
+                    })
+                def_rows.sort(key=lambda r: r["Avg Pts"], reverse=True)
+                for i, row in enumerate(def_rows):
+                    row["Rank"] = i + 1
+                df_def_rank = pd.DataFrame(def_rows)[["Rank", "Team", "Avg Pts", "Players", "vs League"]]
+                st.dataframe(df_def_rank, width="stretch", hide_index=True,
+                             height=(len(df_def_rank) + 1) * 35 + 3,
+                             column_config={"Avg Pts": COL_CFG["Avg Pts"]})
+
+            # Individual DEF players for selected team
+            def_players = team_def_entry.get("players", [])
+            if def_players:
+                with st.expander(f"{sel_ta_team} — individual DEF/IDP players", expanded=True):
+                    st.dataframe(
+                        pd.DataFrame([{
+                            "Player": p["name"], "Pos": p["pos"],
+                            f"{STATS_SEASON} Pts": round(p["pts"], 1),
+                        } for p in def_players]),
+                        width="stretch", hide_index=True,
+                        height=(len(def_players) + 1) * 35 + 3,
+                        column_config={f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"]},
+                    )
 
         with _tr_tabs[1]:
             # ── Best Trade Partners ───────────────────────────────────────────────────
@@ -4006,209 +4063,7 @@ elif page == "Trade Room":
                             column_config={val_col: COL_CFG["Value"]},
                         )
 
-        with _tr_tabs[3]:
-            # ── Section A: Auto Trade Suggestions ────────────────────────────────────
-            st.subheader("Dynasty Little Helper Suggestions")
-
-            surplus_pos = td["surplus_pos"]
-            need_pos    = td["need_pos"]
-
-            def _pos_status(target_rid, pos):
-                """Surplus / Deficit / Average for a team at a given position (handles PICK via relative%)."""
-                owner_td = team_data.get(target_rid, {})
-                if pos == "PICK":
-                    rel = owner_td.get("relative", {}).get("PICK")
-                    if rel is None: return "—"
-                    if rel >= 10:   return "Surplus"
-                    if rel <= -10:  return "Deficit"
-                    return "Average"
-                ns = owner_td.get("need_scores",    {}).get(pos)
-                ss = owner_td.get("surplus_scores", {}).get(pos)
-                if ns is None or ss is None: return "—"
-                if ss > ns and ss >= 20:  return "Surplus"
-                if ns > ss and ns >= 20:  return "Deficit"
-                return "Average"
-
-            # Two toggles: shop the explicit Trade Block, and whether to include Untouchables
-            _sa_c1, _sa_c2 = st.columns(2)
-            _shop_block = _sa_c1.checkbox(
-                "Shop my Trade Block", value=bool(_trade_block),
-                help="Drive suggestions from players you tagged Trade, instead of auto-detected surplus.",
-                key="ta_shop_block",
-            )
-            _incl_untouch = _sa_c2.checkbox(
-                "Include Untouchables", value=False,
-                help="Also include players tagged Untouchable in the suggestions.",
-                key="ta_incl_untouch",
-            )
-            _need_for_targets = need_pos if need_pos in SKILL_POSITIONS else None
-
-            if (not _shop_block or not _trade_block) and (not surplus_pos or not need_pos or surplus_pos == need_pos):
-                st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players Trade to shop them directly.")
-            else:
-                if _shop_block and _trade_block:
-                    # Suggestions driven by YOUR trade block: shop each tagged player for your need
-                    suggestions = []
-                    for _bp in _trade_block:
-                        _tg = sorted(
-                            [p for p in all_players_by_pos.get(_need_for_targets, []) if p["on_team_rid"] != rid],
-                            key=lambda p: abs((p["value"] or 0) - (_bp["value"] or 0)),
-                        )[:3] if _need_for_targets else []
-                        suggestions.append({
-                            "type": "player",
-                            "asset": {"name": _bp["name"], "value": _bp["value"]},
-                            "asset_pos": _bp["pos"],
-                            "want_pos": _need_for_targets or "—",
-                            "targets": _tg,
-                        })
-                else:
-                    suggestions = td.get("suggestions", [])
-                    if not _incl_untouch:   # default: never offer an Untouchable player
-                        suggestions = [s for s in suggestions
-                                       if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
-                if not suggestions or not any(s.get("targets") for s in suggestions):
-                    st.info("Not enough data to generate suggestions — tag players Trade, or check you have a clear positional need.")
-                else:
-                    # ── Top 5 ideal player-for-player targets ─────────────────────────
-                    # Score each candidate: +2 if target has surplus of need_pos,
-                    # +2 if target team needs the asset_pos, then sort by score desc,
-                    # value proximity asc within each score tier.
-                    _candidates = []
-                    for sug in suggestions:
-                        if sug["type"] != "player":
-                            continue
-                        _asset    = sug["asset"]
-                        _want_pos = sug["want_pos"]
-                        _apos     = sug["asset_pos"]
-                        for t in sug["targets"]:
-                            _tpn  = _pos_status(t["on_team_rid"], _want_pos)
-                            _ttpn = _pos_status(t["on_team_rid"], _apos)
-                            _fit  = (2 if "Surplus" in _tpn  else 0) + \
-                                    (2 if "Deficit" in _ttpn else 0)
-                            _vdiff = abs(t["value"] - _asset["value"])
-                            _candidates.append({
-                                "Trade Away":                f"{_asset['name']}  ({_apos})",
-                                "Target Player":             f"{t['name']}  ({_want_pos})",
-                                "Currently On":              t["on_team"],
-                                val_col:                  t["value"],
-                                "Value Diff":                f"{t['value'] - _asset['value']:+,}",
-                                "Their Target Supply":      _tpn,
-                                "Need for Your Asset": _ttpn,
-                                "_fit":   _fit,
-                                "_vdiff": _vdiff,
-                            })
-
-                    if _candidates:
-                        _candidates.sort(key=lambda x: (-x["_fit"], x["_vdiff"]))
-                        _top5 = [{k: v for k, v in c.items() if not k.startswith("_")}
-                                 for c in _candidates[:5]]
-                        st.markdown("**Top 5 Ideal Player-for-Player Targets**")
-                        st.caption("Ranked by trade fit (both teams benefit) then closest value.")
-                        st.dataframe(
-                            pd.DataFrame(_top5),
-                            width="stretch", hide_index=True,
-                            key="sug_top5",
-                            column_config={val_col: COL_CFG["Value"]},
-                        )
-                        st.markdown("---")
-
-                    st.caption("Full suggestion details by asset:")
-                    for sug in suggestions:
-                        asset    = sug["asset"]
-                        want_pos = sug["want_pos"]
-                        targets  = sug["targets"]
-
-                        if sug["type"] == "player":
-                            header = (
-                                f"**Trade away** — {sug['asset_pos']}: **{asset['name']}** "
-                                f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
-                            )
-                        else:
-                            header = (
-                                f"**Use pick** — **{asset['label']}** "
-                                f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
-                            )
-
-                        st.markdown(header)
-                        if not targets:
-                            st.caption("No matching targets found on other rosters.")
-                        else:
-                            asset_val  = asset["value"]
-                            asset_pos  = sug["asset_pos"]
-
-                            st.dataframe(
-                                pd.DataFrame([{
-                                    "Player":                    f"{t['name']}  ({want_pos})",
-                                    "Currently On":              t["on_team"],
-                                    val_col:                  t["value"],
-                                    "Value Diff":                f"{t['value'] - asset_val:+,}",
-                                    "Their Target Supply":      _pos_status(t["on_team_rid"], want_pos),
-                                    "Need for Your Asset": _pos_status(t["on_team_rid"], asset_pos),
-                                } for t in targets]),
-                                width="stretch", hide_index=True,
-                                key=f"sug_{asset.get('pid', asset.get('label', ''))}",
-                                column_config={val_col: COL_CFG["Value"]},
-                            )
-                        st.markdown("---")
-
-        with _tr_tabs[4]:
-            # ── Section B: Defensive Strength (IDP/DEF) ───────────────────────────────
-            st.subheader("Defensive Strength (IDP / DEF)")
-            st.caption(
-                "Pools DL + LB + DB + DEF positions. Ranked by average 2025 fantasy points "
-                "(league scoring), compared to the league average. Kickers excluded."
-            )
-
-            team_def_entry = def_analysis.get(rid, {})
-            def_avg_pts    = team_def_entry.get("avg_pts", 0)
-            def_count      = team_def_entry.get("player_count", 0)
-            def_rel        = (def_avg_pts - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
-            def_suffix     = "▲ Surplus" if def_rel >= 5 else ("▼ Need" if def_rel <= -5 else "~ Average")
-
-            d1, d2, d3 = st.columns(3)
-            d1.metric(
-                label=f"DEF Avg Pts  ({def_suffix})",
-                value=f"{def_avg_pts:.1f}",
-                delta=f"{def_rel:+.1f}% vs league avg ({league_def_avg:.1f})",
-                delta_color="normal",
-            )
-            d2.metric("IDP/DEF Players on Roster", def_count)
-            d3.metric("League DEF Avg Pts", f"{league_def_avg:.1f}")
-
-            # League-wide DEF ranking table
-            with st.expander("Full league DEF ranking", expanded=True):
-                def_rows = []
-                for r2id, de in def_analysis.items():
-                    r2_rel = (de["avg_pts"] - league_def_avg) / league_def_avg * 100 if league_def_avg else 0
-                    def_rows.append({
-                        "Team":       de["name"],
-                        "Avg Pts":    round(de["avg_pts"], 1),
-                        "Players":    de["player_count"],
-                        "vs League":  f"{r2_rel:+.1f}%",
-                    })
-                def_rows.sort(key=lambda r: r["Avg Pts"], reverse=True)
-                for i, row in enumerate(def_rows):
-                    row["Rank"] = i + 1
-                df_def_rank = pd.DataFrame(def_rows)[["Rank", "Team", "Avg Pts", "Players", "vs League"]]
-                st.dataframe(df_def_rank, width="stretch", hide_index=True,
-                             height=(len(df_def_rank) + 1) * 35 + 3,
-                             column_config={"Avg Pts": COL_CFG["Avg Pts"]})
-
-            # Individual DEF players for selected team
-            def_players = team_def_entry.get("players", [])
-            if def_players:
-                with st.expander(f"{sel_ta_team} — individual DEF/IDP players", expanded=True):
-                    st.dataframe(
-                        pd.DataFrame([{
-                            "Player": p["name"], "Pos": p["pos"],
-                            f"{STATS_SEASON} Pts": round(p["pts"], 1),
-                        } for p in def_players]),
-                        width="stretch", hide_index=True,
-                        height=(len(def_players) + 1) * 35 + 3,
-                        column_config={f"{STATS_SEASON} Pts": COL_CFG[f"{STATS_SEASON} Pts"]},
-                    )
-
-        with _tr_tabs[5]:
+            st.divider()
             # ── Section D: Trade Calculator ──────────────────────────────────────────
             st.subheader("Trade Calculator")
             st.caption(
@@ -4388,6 +4243,151 @@ elif page == "Trade Room":
                                     st.rerun()
                         else:
                             st.caption(f"No clean sweetener on {_light_team} — adjust the pieces manually.")
+
+        with _tr_tabs[3]:
+            # ── Section A: Auto Trade Suggestions ────────────────────────────────────
+            st.subheader("Dynasty Little Helper Suggestions")
+
+            surplus_pos = td["surplus_pos"]
+            need_pos    = td["need_pos"]
+
+            def _pos_status(target_rid, pos):
+                """Surplus / Deficit / Average for a team at a given position (handles PICK via relative%)."""
+                owner_td = team_data.get(target_rid, {})
+                if pos == "PICK":
+                    rel = owner_td.get("relative", {}).get("PICK")
+                    if rel is None: return "—"
+                    if rel >= 10:   return "Surplus"
+                    if rel <= -10:  return "Deficit"
+                    return "Average"
+                ns = owner_td.get("need_scores",    {}).get(pos)
+                ss = owner_td.get("surplus_scores", {}).get(pos)
+                if ns is None or ss is None: return "—"
+                if ss > ns and ss >= 20:  return "Surplus"
+                if ns > ss and ns >= 20:  return "Deficit"
+                return "Average"
+
+            # Two toggles: shop the explicit Trade Block, and whether to include Untouchables
+            _sa_c1, _sa_c2 = st.columns(2)
+            _shop_block = _sa_c1.checkbox(
+                "Shop my Trade Block", value=bool(_trade_block),
+                help="Drive suggestions from players you tagged Trade, instead of auto-detected surplus.",
+                key="ta_shop_block",
+            )
+            _incl_untouch = _sa_c2.checkbox(
+                "Include Untouchables", value=False,
+                help="Also include players tagged Untouchable in the suggestions.",
+                key="ta_incl_untouch",
+            )
+            _need_for_targets = need_pos if need_pos in SKILL_POSITIONS else None
+
+            if (not _shop_block or not _trade_block) and (not surplus_pos or not need_pos or surplus_pos == need_pos):
+                st.info("No clear trade opportunities identified — positional values are well-balanced. Tag players Trade to shop them directly.")
+            else:
+                if _shop_block and _trade_block:
+                    # Suggestions driven by YOUR trade block: shop each tagged player for your need
+                    suggestions = []
+                    for _bp in _trade_block:
+                        _tg = sorted(
+                            [p for p in all_players_by_pos.get(_need_for_targets, []) if p["on_team_rid"] != rid],
+                            key=lambda p: abs((p["value"] or 0) - (_bp["value"] or 0)),
+                        )[:3] if _need_for_targets else []
+                        suggestions.append({
+                            "type": "player",
+                            "asset": {"name": _bp["name"], "value": _bp["value"]},
+                            "asset_pos": _bp["pos"],
+                            "want_pos": _need_for_targets or "—",
+                            "targets": _tg,
+                        })
+                else:
+                    suggestions = td.get("suggestions", [])
+                    if not _incl_untouch:   # default: never offer an Untouchable player
+                        suggestions = [s for s in suggestions
+                                       if not (s.get("type") == "player" and s.get("asset", {}).get("name") in _untouchable)]
+                if not suggestions or not any(s.get("targets") for s in suggestions):
+                    st.info("Not enough data to generate suggestions — tag players Trade, or check you have a clear positional need.")
+                else:
+                    # ── Top 5 ideal player-for-player targets ─────────────────────────
+                    # Score each candidate: +2 if target has surplus of need_pos,
+                    # +2 if target team needs the asset_pos, then sort by score desc,
+                    # value proximity asc within each score tier.
+                    _candidates = []
+                    for sug in suggestions:
+                        if sug["type"] != "player":
+                            continue
+                        _asset    = sug["asset"]
+                        _want_pos = sug["want_pos"]
+                        _apos     = sug["asset_pos"]
+                        for t in sug["targets"]:
+                            _tpn  = _pos_status(t["on_team_rid"], _want_pos)
+                            _ttpn = _pos_status(t["on_team_rid"], _apos)
+                            _fit  = (2 if "Surplus" in _tpn  else 0) + \
+                                    (2 if "Deficit" in _ttpn else 0)
+                            _vdiff = abs(t["value"] - _asset["value"])
+                            _candidates.append({
+                                "Trade Away":                f"{_asset['name']}  ({_apos})",
+                                "Target Player":             f"{t['name']}  ({_want_pos})",
+                                "Currently On":              t["on_team"],
+                                val_col:                  t["value"],
+                                "Value Diff":                f"{t['value'] - _asset['value']:+,}",
+                                "Their Target Supply":      _tpn,
+                                "Need for Your Asset": _ttpn,
+                                "_fit":   _fit,
+                                "_vdiff": _vdiff,
+                            })
+
+                    if _candidates:
+                        _candidates.sort(key=lambda x: (-x["_fit"], x["_vdiff"]))
+                        _top5 = [{k: v for k, v in c.items() if not k.startswith("_")}
+                                 for c in _candidates[:5]]
+                        st.markdown("**Top 5 Ideal Player-for-Player Targets**")
+                        st.caption("Ranked by trade fit (both teams benefit) then closest value.")
+                        st.dataframe(
+                            pd.DataFrame(_top5),
+                            width="stretch", hide_index=True,
+                            key="sug_top5",
+                            column_config={val_col: COL_CFG["Value"]},
+                        )
+                        st.markdown("---")
+
+                    st.caption("Full suggestion details by asset:")
+                    for sug in suggestions:
+                        asset    = sug["asset"]
+                        want_pos = sug["want_pos"]
+                        targets  = sug["targets"]
+
+                        if sug["type"] == "player":
+                            header = (
+                                f"**Trade away** — {sug['asset_pos']}: **{asset['name']}** "
+                                f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
+                            )
+                        else:
+                            header = (
+                                f"**Use pick** — **{asset['label']}** "
+                                f"&nbsp;·&nbsp; {val_col}: **{asset['value']:,}** → get **{want_pos}**"
+                            )
+
+                        st.markdown(header)
+                        if not targets:
+                            st.caption("No matching targets found on other rosters.")
+                        else:
+                            asset_val  = asset["value"]
+                            asset_pos  = sug["asset_pos"]
+
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Player":                    f"{t['name']}  ({want_pos})",
+                                    "Currently On":              t["on_team"],
+                                    val_col:                  t["value"],
+                                    "Value Diff":                f"{t['value'] - asset_val:+,}",
+                                    "Their Target Supply":      _pos_status(t["on_team_rid"], want_pos),
+                                    "Need for Your Asset": _pos_status(t["on_team_rid"], asset_pos),
+                                } for t in targets]),
+                                width="stretch", hide_index=True,
+                                key=f"sug_{asset.get('pid', asset.get('label', ''))}",
+                                column_config={val_col: COL_CFG["Value"]},
+                            )
+                        st.markdown("---")
 
     # ── Page: Draft Room ─────────────────────────────────────────────────────────
     _frag_trade_analyzer()
