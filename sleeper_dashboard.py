@@ -1889,7 +1889,6 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                           players, player_pts, rosters, pos_ranks,
                           fc_values, val_maps, value_source, val_col):
     """Live 4-panel snapshot for the selected team, shown on League Overview."""
-    st.markdown("### :material/leaderboard: My Team Dashboard")
     if not my_team or my_team not in team_name_to_rid:
         st.info("Pick **My Team** in the sidebar to unlock your live dashboard — team rating, "
                 "trade needs, best trade partner, and cut/add suggestions.")
@@ -1898,50 +1897,55 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
     td   = team_data[rid]
     prof = _team_value_profile(team_data, players)
 
-    # Owner identity — Sleeper avatar (team logo → profile pic → initial) + team name
+    # ── Team identity row + status pills (right) ──────────────────────────────
     _owner    = globals().get("team_owner_user", {}).get(my_team)
     _owner_nm = (_owner or {}).get("display_name")
-    st.markdown(
-        f'<div style="display:flex;align-items:center;gap:12px;margin:2px 0 16px;">'
-        f'{user_avatar_tag(_owner, my_team, px=46, radius=12)}'
-        f'<div><div style="font-size:1.2rem;font-weight:700;color:var(--text-hi);line-height:1.15;">'
-        f'{_html.escape(my_team)}</div>'
-        + (f'<div style="font-size:.8rem;color:var(--text-mid);">@{_html.escape(_owner_nm)}</div>'
-           if _owner_nm else '')
-        + '</div></div>', unsafe_allow_html=True)
-
-    # Panel 1 — Team Rating
-    rating, colour, blurb = team_rating(rid, prof)
+    rating, _rcol, _blurb    = team_rating(rid, prof)
     total, avg_age, pick_val = prof[rid]
     _rank = sorted(prof, key=lambda r: -prof[r][0]).index(rid) + 1
-    st.markdown(
-        f'<div style="border-left:5px solid {colour};background:#171c26;border:1px solid #2a3344;'
-        f'border-radius:12px;padding:11px 16px;margin:2px 0 14px;">'
-        f'<span style="background:{colour};color:#fff;font-weight:600;font-size:.8rem;'
-        f'padding:3px 11px;border-radius:6px;">{rating}</span>'
-        f'<span style="color:#c7cdd6;margin-left:10px;font-size:.9rem;">{_html.escape(blurb)}</span><br>'
-        f'<span style="color:#9aa4b2;font-size:.76rem;">Roster value rank #{_rank}/{len(prof)} · '
-        f'avg age (top 12) {avg_age:.1f} · pick capital {pick_val:,.0f}</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Season + dynasty status pills (concept-2 / CODE-PROMPT §2.1)
-    _n = len(team_data)
+    _n    = len(team_data)
     _sr, _dr, _ = _league_ranks_for_facts(team_data, players, prof)[rid]
-    _sea, _dyn = it.season_status(_sr, _n), it.dynasty_status(_dr, _n)
-    _sc = {"contender": "green", "in the mix": "gold", "long shot": "red"}
-    _dc = {"ascending": "green", "stable": "gold", "aging": "red"}
+    _sea, _dyn  = it.season_status(_sr, _n), it.dynasty_status(_dr, _n)
+    _sea_c  = {"contender": "green", "in the mix": "gold", "long shot": "red"}[_sea]
+    _dyn_c  = {"ascending": "green", "stable": "blue", "aging": "red"}[_dyn]
+    _rate_c = {"Win Now": "green", "Fading": "gold", "Rebuilding": "blue", "Stuck": "red"}.get(rating, "gold")
+    _handle = (f'<div style="font-size:.8rem;color:var(--text-mid);">@{_html.escape(_owner_nm)}</div>'
+               if _owner_nm else '')
     st.markdown(
-        f'<div style="margin:-8px 0 16px;">'
-        f'<span class="pill {_sc[_sea]}">This season · {_sea.capitalize()} ({_sr}/{_n})</span>'
-        f'&nbsp;&nbsp;'
-        f'<span class="pill {_dc[_dyn]}">Dynasty · {_dyn.capitalize()} ({_dr}/{_n})</span>'
-        f'</div>', unsafe_allow_html=True)
+        f'<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;'
+        f'flex-wrap:wrap;margin:2px 0 16px;">'
+        f'<div style="display:flex;align-items:center;gap:12px;">'
+        f'{user_avatar_tag(_owner, my_team, px=46, radius=12)}'
+        f'<div><div style="font-size:1.2rem;font-weight:700;color:var(--text-hi);line-height:1.15;">'
+        f'{_html.escape(my_team)}</div>{_handle}</div></div>'
+        f'<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+        f'<span class="pill {_rate_c}">{rating}</span>'
+        f'<span class="pill {_sea_c}">{_sea.capitalize()} · {_sr}/{_n}</span>'
+        f'<span class="pill {_dyn_c}">Dynasty · {_dyn.capitalize()} · {_dr}/{_n}</span>'
+        f'</div></div>', unsafe_allow_html=True)
+
+    # ── 3 KPI cards: Roster value rank · Win-now · Dynasty ─────────────────────
+    _tier_lbl, _tier_c = ("Elite", "green") if _rank <= _n / 4 else \
+                         (("Solid", "gold") if _rank <= _n / 2 else ("Weak", "red"))
+    _kpis = [
+        ("Roster value rank",
+         f'#{_rank}<span style="font-size:.5em;color:var(--text-mid);">/{_n}</span>', _tier_lbl, _tier_c),
+        ("Win-now", _sea.capitalize(), f"{_sr} of {_n}", _sea_c),
+        ("Dynasty", _dyn.capitalize(), f"{_dr} of {_n}", _dyn_c),
+    ]
+    for _col, (_eb, _val, _pill, _pc) in zip(st.columns(3), _kpis):
+        _col.markdown(
+            f'<div class="dlh-card" style="border-left:4px solid var(--{_pc});padding:16px 18px;">'
+            f'<div class="eyebrow">{_eb}</div>'
+            f'<div style="font-family:\'Space Grotesk\',sans-serif;font-size:34px;font-weight:700;'
+            f'color:var(--text-hi);line-height:1;margin:8px 0 12px;">{_val}</div>'
+            f'<span class="pill {_pc}">{_pill}</span></div>', unsafe_allow_html=True)
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     # Panel 2 — Trade Needs
-    with c1:
-        st.markdown("#### :material/explore: Top Trade Needs")
+    with c1.container(border=True):
+        st.markdown('<div class="eyebrow" style="margin-bottom:10px;">Top Trade Needs</div>', unsafe_allow_html=True)
         needs = [(p, s) for p, s in sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])[:3]
                  if s and s > 0]
         if needs:
@@ -1975,8 +1979,8 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
             st.caption("No clear needs — roster is balanced.")
 
     # Panel 3 — Best Trade Partner (same ranking as Trade Room > Best Trade Partners)
-    with c2:
-        st.markdown("#### :material/handshake: Best Trade Partner")
+    with c2.container(border=True):
+        st.markdown('<div class="eyebrow" style="margin-bottom:10px;">Best Trade Partner</div>', unsafe_allow_html=True)
         _bp_need    = td.get("need_pos")
         _bp_surplus = td.get("surplus_pos")
         _untouch    = {nm for nm, t in st.session_state.get("player_tags", {}).items()
@@ -2580,7 +2584,19 @@ with st.sidebar:
             + (f'<div style="font-size:.76rem;color:var(--text-mid);">@{_html.escape(_own_nm)}</div>'
                if _own_nm else '')
             + '</div></div>', unsafe_allow_html=True)
-        st.caption(f"Value source: **{vs_label(st.session_state.value_source)}** · change in **Settings**")
+        st.markdown(
+            f'<div style="font-size:.8rem;color:var(--text-mid);margin:3px 0 -2px;">'
+            f'<strong style="color:var(--text-hi);">{vs_label(st.session_state.value_source)}</strong></div>',
+            unsafe_allow_html=True)
+        st.markdown(
+            "<style>[data-testid='stSidebar'] .st-key-vs_change button{background:transparent!important;"
+            "border:none!important;box-shadow:none!important;color:var(--gold)!important;padding:0!important;"
+            "min-height:auto!important;height:auto!important;font-size:.76rem!important;font-weight:600!important;}"
+            "[data-testid='stSidebar'] .st-key-vs_change button:hover{color:var(--green-bright)!important;}</style>",
+            unsafe_allow_html=True)
+        if st.button("change value source →", key="vs_change"):
+            st.session_state.nav_page = "Settings"
+            st.rerun()
     else:
         st.caption("No team selected — choose yours in **Settings**.")
 
@@ -2762,7 +2778,13 @@ def _render_rookie_class_section():
 if page == "Overview":
     @st.fragment
     def _frag_league_overview():
-        render_league_title(league)
+        _hc1, _hc2 = st.columns([4, 1], vertical_alignment="center")
+        with _hc1:
+            render_league_title(league)
+        with _hc2:
+            if st.button(":material/sync: Switch league", key="ov_switch_league", width="stretch"):
+                st.session_state.league_id = None
+                st.rerun()
         _ov_tabs = st.tabs(["My Team Dashboard", "Positional Strength & Rebuild"])
 
         with _ov_tabs[0]:
