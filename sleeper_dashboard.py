@@ -1847,6 +1847,24 @@ def _league_ranks_for_facts(team_data, players, prof=None):
     return {r: (season[r], dynasty[r], power[r]) for r in rids}
 
 
+def power_ranks(team_data, def_analysis):
+    """League power ranks {rid: rank} computed the SAME way as the Power Rankings
+    table (default view): mean NORMALISED positional rank across QB/RB/WR/TE/Picks/DEF.
+    Lower rank = stronger. Distinct from roster-value rank (that's win-now/season)."""
+    rids = list(team_data)
+    n = len(rids) or 1
+    _dv = {r: ((def_analysis or {}).get(r) or {}).get("avg_pts") for r in rids}
+    _do = sorted([x for x in _dv.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
+    _drank = {r: i + 1 for i, (r, _) in enumerate(_do)}
+    _dims = ["QB", "RB", "WR", "TE", "PICK", "DEF"]
+
+    def _score(r):
+        lr = {**(team_data[r].get("pos_league_rank") or {}), "DEF": _drank.get(r)}
+        norm = [(1 - (lr[d] - 1) / max(n - 1, 1)) * 100 for d in _dims if lr.get(d) is not None]
+        return sum(norm) / len(norm) if norm else 0
+    return {r: i + 1 for i, r in enumerate(sorted(rids, key=_score, reverse=True))}
+
+
 def build_my_team_facts(my_team, team_name_to_rid, team_data, players, value_source=None):
     """Assemble the fact object for the user's team, or None if not selectable."""
     if not my_team or my_team not in team_name_to_rid:
@@ -1900,11 +1918,10 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
     # ── Team identity row + status pills (right) ──────────────────────────────
     _owner    = globals().get("team_owner_user", {}).get(my_team)
     _owner_nm = (_owner or {}).get("display_name")
-    rating, _rcol, _blurb    = team_rating(rid, prof)
-    total, avg_age, pick_val = prof[rid]
-    _rank = sorted(prof, key=lambda r: -prof[r][0]).index(rid) + 1
+    rating, _rcol, _blurb = team_rating(rid, prof)
     _n    = len(team_data)
     _sr, _dr, _ = _league_ranks_for_facts(team_data, players, prof)[rid]
+    _pwr = power_ranks(team_data, globals().get("def_analysis") or {}).get(rid, _n)
     _sea, _dyn  = it.season_status(_sr, _n), it.dynasty_status(_dr, _n)
     _sea_c  = {"contender": "green", "in the mix": "gold", "long shot": "red"}[_sea]
     _dyn_c  = {"ascending": "green", "stable": "blue", "aging": "red"}[_dyn]
@@ -1924,12 +1941,14 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
         f'<span class="pill {_dyn_c}">Dynasty · {_dyn.capitalize()} · {_dr}/{_n}</span>'
         f'</div></div>', unsafe_allow_html=True)
 
-    # ── 3 KPI cards: Roster value rank · Win-now · Dynasty ─────────────────────
-    _tier_lbl, _tier_c = ("Elite", "green") if _rank <= _n / 4 else \
-                         (("Solid", "gold") if _rank <= _n / 2 else ("Weak", "red"))
+    # ── 3 KPI cards: Power rank · Win-now · Dynasty (three DISTINCT metrics) ────
+    # Power rank = mean positional league rank (same ordering as the Power Rankings
+    # table) — NOT roster value (that's what Win-now/season already reflects).
+    _tier_lbl, _tier_c = ("Elite", "green") if _pwr <= _n / 4 else \
+                         (("Solid", "gold") if _pwr <= _n / 2 else ("Weak", "red"))
     _kpis = [
-        ("Roster value rank",
-         f'#{_rank}<span style="font-size:.5em;color:var(--text-mid);">/{_n}</span>', _tier_lbl, _tier_c),
+        ("Power rank",
+         f'#{_pwr}<span style="font-size:.5em;color:var(--text-mid);">/{_n}</span>', _tier_lbl, _tier_c),
         ("Win-now", _sea.capitalize(), f"{_sr} of {_n}", _sea_c),
         ("Dynasty", _dyn.capitalize(), f"{_dr} of {_n}", _dyn_c),
     ]
