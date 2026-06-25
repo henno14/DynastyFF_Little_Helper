@@ -2244,104 +2244,128 @@ if "league_id" not in st.session_state:
     st.session_state.league_id = None   # login-first: always start at the entry screen
 
 if not st.session_state.get("league_id"):
-    # Centre + constrain the entry form so it reads like an intentional login card.
-    # Inside the card every block — logo, subtitle, the Find/Sign-in tabs, the label
-    # and the input — shares one left edge for a clean alignment grid.
-    _el, _ec, _er = st.columns([1, 1.4, 1])
-    with _ec:
-        if _LOGO_HORIZONTAL:
-            st.markdown(
-                f'<div style="margin:0.5rem 0 0.5rem;">'
-                f'<div style="width:min(360px,90%);">{_LOGO_HORIZONTAL}</div></div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.title("Dynasty FF Lil' Helper")
+    _LSIDE, _RSIDE = st.columns([1, 1.05], gap="large")
+
+    with _LSIDE:
+        _hero = _LOGO_STACKED or _LOGO_HORIZONTAL or ""
+
+        def _ck(txt):
+            return (f'<div style="display:flex;align-items:center;gap:10px;margin:10px 0;'
+                    f'color:var(--text-body);font-size:.92rem;">'
+                    f'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--green-bright)" '
+                    f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:0 0 auto;">'
+                    f'<path d="M21.801 10A10 10 0 1 1 17 3.335"/><path d="m9 11 3 3L22 4"/></svg>'
+                    f'<span>{txt}</span></div>')
+
         st.markdown(
-            '<p style="text-align:left; color:var(--text-mid); max-width:620px; margin:0 0 1rem;">'
-            "Your dynasty trade brain — FantasyCalc + DynastyNerds + KeepTradeCut + DynastyProcess "
-            "in one, plus trade analysis, draft tools, and a free-agent advisor.</p>",
-            unsafe_allow_html=True,
-        )
-        # Signed in but no saved league yet (first sign-in) → guide them to pick one
+            f'<div style="background:repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 1px, '
+            f'transparent 1px 46px), var(--bg-page); border:1px solid var(--border); border-radius:16px; '
+            f'padding:44px 34px; min-height:440px; display:flex; flex-direction:column; justify-content:center;">'
+            f'<div style="width:min(230px,72%); margin:0 auto 4px;">{_hero}</div>'
+            f'<div style="text-align:center; color:var(--text-body); font-size:1.05rem; margin:10px 0 24px;">'
+            f'Your dynasty command center</div>'
+            f'<div style="max-width:310px; margin:0 auto; width:100%;">'
+            f'{_ck("Trade analysis · 4 value sources")}'
+            f'{_ck("Rookie draft simulator + 2026 big board")}'
+            f'{_ck("AI insights for Sleeper leagues")}'
+            f'</div></div>', unsafe_allow_html=True)
+
+    with _RSIDE:
+        st.markdown('<div class="eyebrow" style="margin-top:10px;">Get started — it’s free</div>',
+                    unsafe_allow_html=True)
+        st.markdown('<h1 style="margin:.25rem 0 .35rem;">Find your league</h1>', unsafe_allow_html=True)
+        st.markdown('<p style="color:var(--text-mid); margin:0 0 1.1rem;">Enter your Sleeper username to '
+                    'connect your leagues — or paste a league ID directly.</p>', unsafe_allow_html=True)
         if st.session_state.get("auth_email"):
-            st.success(f"Signed in as **{st.session_state.auth_email}** — pick your league below "
-                       "to get started (your settings will save automatically from now on).")
-        _tab_find, _tab_signin = st.tabs([":material/travel_explore: Find my league", ":material/login: Sign in"])
+            st.success(f"Signed in as **{st.session_state.auth_email}** — pick your league below to get started.")
 
-        with _tab_signin:
-            if not auth_available():
-                st.info("Sign-in isn't available right now — use **Find my league**.")
-            else:
-                st.caption("Signed-in members jump straight back to their league and saved settings.")
-                if not st.session_state.get("_auth_code_sent"):
-                    _ae = st.text_input("Email", key="entry_auth_email", placeholder="you@email.com")
-                    if st.button("Send code", key="entry_auth_send"):
-                        ok, err = auth_send_code(_ae)
-                        if ok:
-                            st.session_state._auth_code_sent = True
-                            st.session_state._auth_pending_email = (_ae or "").strip()
-                            st.rerun()
-                        else:
-                            st.error(f"Couldn't send code: {err}")
+        st.markdown('<div class="eyebrow">Sleeper username or league ID</div>', unsafe_allow_html=True)
+        _fc1, _fc2 = st.columns([3, 1], vertical_alignment="bottom")
+        _in = _fc1.text_input("Sleeper username or league ID", key="entry_input",
+                              placeholder="your Sleeper username…", label_visibility="collapsed")
+        if _fc2.button("Find →", type="primary", key="entry_find", width="stretch"):
+            _q = (_in or "").strip()
+            st.session_state.pop("_entry_err", None)
+            if _q.isdigit() and len(_q) >= 15:
+                _lg = None
+                try: _lg = get(f"{BASE}/league/{_q}")
+                except Exception: _lg = None
+                if _lg and _lg.get("league_id"):
+                    st.session_state._found_leagues = [{
+                        "league_id": _lg["league_id"], "name": _lg.get("name", "League"),
+                        "season": _lg.get("season"), "total_rosters": _lg.get("total_rosters")}]
                 else:
-                    st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
-                    _code = st.text_input("6-digit code", key="entry_auth_code")
-                    _ec1, _ec2 = st.columns(2)
-                    if _ec1.button("Verify & sign in", type="primary", key="entry_auth_verify"):
-                        _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
-                        if _em:
-                            st.session_state.auth_email = _em
-                            st.session_state.pop("_auth_code_sent", None)
-                            _ll = load_last_league()      # jump straight in if they have a saved league
-                            if _ll:
-                                st.session_state.league_id = _ll
-                            st.session_state._toast_msg = f"Signed in as {_em}"
-                            st.rerun()
-                        else:
-                            st.error("Invalid or expired code — try again.")
-                    if _ec2.button("Cancel", key="entry_auth_cancel"):
-                        st.session_state.pop("_auth_code_sent", None)
-                        st.rerun()
+                    st.session_state._found_leagues = []
+                    st.session_state._entry_err = "No league found with that ID."
+            else:
+                _lgs = fetch_user_leagues(_q)
+                st.session_state._found_leagues = _lgs
+                if not _lgs:
+                    st.session_state._entry_err = f"No NFL leagues found for '{_q}'. Check the username, or paste a league ID."
+            st.rerun()
 
-        with _tab_find:
-            st.caption("Enter your **Sleeper username** (we'll find your leagues) — or paste a **league ID** directly.")
-            _in = st.text_input("Sleeper username or league ID", key="entry_input",
-                                placeholder="your Sleeper username — or paste a league ID")
-            if st.button("Find →", type="primary", key="entry_find"):
-                _q = (_in or "").strip()
+        if st.session_state.get("_entry_err"):
+            st.error(st.session_state._entry_err)
+        _found = st.session_state.get("_found_leagues") or []
+        if _found:
+            _labels = {f"{l['name']}  ·  {l.get('season','')}  ·  {l.get('total_rosters','?')} teams": l["league_id"]
+                       for l in _found}
+            _pick = st.selectbox("Pick your league", list(_labels.keys()), key="entry_pick")
+            if st.button("Open league →", type="primary", key="entry_open", width="stretch"):
+                st.session_state.league_id = _labels[_pick]
+                save_last_league(_labels[_pick])
+                st.session_state.pop("_found_leagues", None)
                 st.session_state.pop("_entry_err", None)
-                if _q.isdigit() and len(_q) >= 15:        # looks like a league ID
-                    _lg = None
-                    try: _lg = get(f"{BASE}/league/{_q}")
-                    except Exception: _lg = None
-                    if _lg and _lg.get("league_id"):
-                        st.session_state._found_leagues = [{
-                            "league_id": _lg["league_id"], "name": _lg.get("name", "League"),
-                            "season": _lg.get("season"), "total_rosters": _lg.get("total_rosters")}]
-                    else:
-                        st.session_state._found_leagues = []
-                        st.session_state._entry_err = "No league found with that ID."
-                else:                                      # treat as a Sleeper username
-                    _lgs = fetch_user_leagues(_q)
-                    st.session_state._found_leagues = _lgs
-                    if not _lgs:
-                        st.session_state._entry_err = f"No NFL leagues found for '{_q}'. Check the username, or paste a league ID."
                 st.rerun()
 
-            if st.session_state.get("_entry_err"):
-                st.error(st.session_state._entry_err)
-            _found = st.session_state.get("_found_leagues") or []
-            if _found:
-                _labels = {f"{l['name']}  ·  {l.get('season','')}  ·  {l.get('total_rosters','?')} teams": l["league_id"]
-                           for l in _found}
-                _pick = st.selectbox("Pick your league", list(_labels.keys()), key="entry_pick")
-                if st.button("Open league →", type="primary", key="entry_open"):
-                    st.session_state.league_id = _labels[_pick]
-                    save_last_league(_labels[_pick])
-                    st.session_state.pop("_found_leagues", None)
-                    st.session_state.pop("_entry_err", None)
+        st.markdown('<div style="text-align:center; color:var(--text-low); font-size:.8rem; '
+                    'border-top:1px solid var(--divider); margin:18px 0 12px; line-height:.1;">'
+                    '<span style="background:var(--bg-page); padding:0 12px;">already have an account?</span></div>',
+                    unsafe_allow_html=True)
+
+        if not st.session_state.get("_show_signin"):
+            if st.button("Sign in", key="entry_show_signin", width="stretch"):
+                st.session_state._show_signin = True
+                st.rerun()
+        elif not auth_available():
+            st.info("Sign-in isn’t available right now — use **Find your league** above.")
+        elif not st.session_state.get("_auth_code_sent"):
+            _ae = st.text_input("Email", key="entry_auth_email", placeholder="you@email.com")
+            _ac1, _ac2 = st.columns(2)
+            if _ac1.button("Send code", type="primary", key="entry_auth_send", width="stretch"):
+                ok, err = auth_send_code(_ae)
+                if ok:
+                    st.session_state._auth_code_sent = True
+                    st.session_state._auth_pending_email = (_ae or "").strip()
                     st.rerun()
+                else:
+                    st.error(f"Couldn't send code: {err}")
+            if _ac2.button("Back", key="entry_auth_back", width="stretch"):
+                st.session_state._show_signin = False
+                st.rerun()
+        else:
+            st.caption(f"Code sent to **{st.session_state.get('_auth_pending_email','')}** — check your email.")
+            _code = st.text_input("6-digit code", key="entry_auth_code")
+            _ec1, _ec2 = st.columns(2)
+            if _ec1.button("Verify & sign in", type="primary", key="entry_auth_verify", width="stretch"):
+                _em = auth_verify_code(st.session_state.get("_auth_pending_email", ""), _code)
+                if _em:
+                    st.session_state.auth_email = _em
+                    st.session_state.pop("_auth_code_sent", None)
+                    _ll = load_last_league()
+                    if _ll:
+                        st.session_state.league_id = _ll
+                    st.session_state._toast_msg = f"Signed in as {_em}"
+                    st.rerun()
+                else:
+                    st.error("Invalid or expired code — try again.")
+            if _ec2.button("Cancel", key="entry_auth_cancel", width="stretch"):
+                st.session_state.pop("_auth_code_sent", None)
+                st.rerun()
+
+        st.markdown('<div style="margin-top:16px;"><span class="pill gold">BETA</span> '
+                    '<span style="color:var(--text-mid); font-size:.82rem; margin-left:6px;">'
+                    'Free access · No credit card needed</span></div>', unsafe_allow_html=True)
     st.stop()
 
 league_id = st.session_state.league_id
