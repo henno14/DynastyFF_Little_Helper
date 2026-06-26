@@ -2275,6 +2275,9 @@ if not st.session_state.get("league_id"):
 
     with _LSIDE:
         _hero = _LOGO_STACKED or _LOGO_HORIZONTAL or ""
+        # Scale SVG to fit the card without overflowing (SVG has fixed width="300")
+        _hero_disp = (_hero.replace('<svg ', '<svg style="max-width:190px;height:auto;display:block;margin:0 auto;" ', 1)
+                      if _hero else "")
 
         def _ck(txt):
             return (f'<div style="display:flex;align-items:center;gap:10px;margin:10px 0;'
@@ -2287,8 +2290,8 @@ if not st.session_state.get("league_id"):
         st.markdown(
             f'<div style="background:repeating-linear-gradient(90deg, rgba(255,255,255,.018) 0 1px, '
             f'transparent 1px 46px), var(--bg-page); border:1px solid var(--border); border-radius:16px; '
-            f'padding:44px 34px; min-height:440px; display:flex; flex-direction:column; justify-content:center;">'
-            f'<div style="width:min(230px,72%); margin:0 auto 4px;">{_hero}</div>'
+            f'padding:44px 34px; min-height:440px; display:flex; flex-direction:column; justify-content:center; align-items:center;">'
+            f'<div style="width:100%; text-align:center; margin-bottom:4px;">{_hero_disp}</div>'
             f'<div style="text-align:center; color:var(--text-body); font-size:1.05rem; margin:10px 0 24px;">'
             f'Your dynasty command center</div>'
             f'<div style="max-width:310px; margin:0 auto; width:100%;">'
@@ -2338,7 +2341,7 @@ if not st.session_state.get("league_id"):
             _labels = {f"{l['name']}  ·  {l.get('season','')}  ·  {l.get('total_rosters','?')} teams": l["league_id"]
                        for l in _found}
             _pick = st.selectbox("Pick your league", list(_labels.keys()), key="entry_pick")
-            if st.button("Open league →", type="primary", key="entry_open", width="stretch"):
+            if st.button("Next →", type="primary", key="entry_open", width="stretch"):
                 st.session_state.league_id = _labels[_pick]
                 save_last_league(_labels[_pick])
                 st.session_state.pop("_found_leagues", None)
@@ -2441,44 +2444,117 @@ if st.session_state.get("_onboarded_for") != league_id:
              or _umap0.get(r.get("owner_id") or "", {}).get("display_name")
              or f"Team {r['roster_id']}") for r in rosters
         })
-        # Centre + constrain so it matches the login card and reads intentionally.
-        # The whole card lives in ONE st.empty() slot so Streamlit manages it as a
-        # single delta — this kills the duplicate "icon + field" render that showed
-        # when the previous run's elements weren't fully overwritten, and we clear
-        # the slot explicitly before the Continue rerun.
+
+        # Per-source blurb shown under the value-source selectbox on setup.
+        _VS_INFO = {
+            "FC Dynasty":    ("Dynasty-specific values updated daily by FantasyCalc — the most widely used "
+                              "public dynasty ranker. Accounts for age, positional scarcity, and dynasty outlook.",
+                              "https://dynasty.fantasycalc.com"),
+            "FC Redraft":    ("Win-now, single-season values with no dynasty youth premium. Best for "
+                              "redraft leagues or evaluating year-by-year output.",
+                              "https://fantasycalc.com"),
+            "DP Values":     ("Open-source dynasty rankings from an analytics-first team. Strong "
+                              "Superflex / 2QB support and transparent methodology.",
+                              "https://dynastyprocess.com"),
+            "Consensus Avg": ("Blends all available dynasty sources for your league format. Reduces "
+                              "ranker bias — a reliable default for most leagues.", None),
+            "KTC":           ("Community-voted dynasty rankings from KeepTradeCut — the original "
+                              "dynasty trade calculator. SuperFlex / 2QB leagues only.",
+                              "https://keeptradecut.com"),
+            "DN Dynasty":    ("Analytics-heavy dynasty rankings from DynastyNerds with detailed "
+                              "positional projections. SuperFlex / 2QB leagues only.",
+                              "https://dynastynerds.com"),
+        }
+
+        # Auto-detect the user's team from the Sleeper username entered on Page 1.
+        _entry_q   = st.session_state.get("entry_input", "").strip()
+        _is_lid    = _entry_q.isdigit() and len(_entry_q) >= 15
+        _default_team_idx = 0
+        # First preference: previously saved team
+        _lp0_team = _lp0.get("team")
+        if _lp0_team and _lp0_team in _teams0:
+            _default_team_idx = _teams0.index(_lp0_team)
+        elif not _is_lid and _entry_q:
+            # Username was entered: find which team in this league belongs to them.
+            for _u in _umap0.values():
+                if _u.get("display_name", "").lower() == _entry_q.lower():
+                    _uid = _u.get("user_id")
+                    for _r in rosters:
+                        if _r.get("owner_id") == _uid:
+                            _tname = ((_umap0.get(_uid, {}).get("metadata") or {}).get("team_name")
+                                      or _umap0.get(_uid, {}).get("display_name")
+                                      or f"Team {_r['roster_id']}")
+                            if _tname in _teams0:
+                                _default_team_idx = _teams0.index(_tname)
+                            break
+                    break
+
+        # The whole setup lives in one st.empty() slot so Streamlit can clear it
+        # atomically before the Continue rerun (prevents leftover widget ghosts).
         _setup_ph = st.empty()
         with _setup_ph.container():
-            _su_l, _su_c, _su_r = st.columns([1, 1.6, 1])
-            with _su_c:
-                render_league_header(league, name_size="1.7rem")
-                render_league_badges(league)
-                st.caption("Quick setup — you can change either of these anytime from the sidebar.")
-                # st.form batches the dropdowns: picking a team / value source no longer
-                # triggers a rerun on every change — nothing saves until "Continue".
-                with st.form("setup_form", border=False):
-                    _setup_team = st.selectbox("Choose Team you want to View", ["—"] + _teams0, key="setup_team")
-                    _setup_vs = st.selectbox(
-                        "Value source to use", available_value_sources(num_qbs, owner_view),
-                        key="setup_vs", format_func=vs_label,
-                        help="Dynasty rankings power player values. **FantasyCalc (Redraft)** is a "
-                             "win-now/seasonal lens — pick it for redraft or brand-new leagues.",
-                    )
-                    st.caption(
-                        "**Value source** sets which dynasty ranking powers every player's value & "
-                        "rank across the app. You can switch it anytime from the sidebar."
-                    )
-                    _setup_rd = redraft_note(_setup_vs)
-                    if _setup_rd:
-                        st.caption(_setup_rd)
-                    _setup_go = st.form_submit_button("Continue", type="primary")
-                if _setup_go:
-                    _setup_ph.empty()   # clear the card before the rerun so nothing lingers
-                    save_league_prefs(league_id, value_source=_setup_vs,
-                                      team=(_setup_team if _setup_team != "—" else None))
-                    st.session_state.pop("_prefs_seeded_for", None)   # sidebar re-seeds from these
+            _su_l, _su_r = st.columns([1, 1.05], gap="large")
+
+            # ── Left panel — league identity card ────────────────────────────
+            with _su_l:
+                _lname      = _html.escape(league.get("name", "Dynasty League"))
+                _avatar_html = league_avatar_tag(league, px=72, radius=16)
+                _badge_html  = "".join(
+                    f'<span style="display:inline-block;background:#1b212c;border:1px solid #2a3344;'
+                    f'border-radius:6px;padding:2px 8px;margin:3px 3px 0;font-size:.72rem;color:#c7cdd6;">'
+                    f'{_html.escape(str(b))}</span>'
+                    for b in league_format_badges(league)
+                )
+                st.markdown(
+                    f'<div style="background:repeating-linear-gradient(90deg,rgba(255,255,255,.018) 0 1px,'
+                    f'transparent 1px 46px),var(--bg-page);border:1px solid var(--border);border-radius:16px;'
+                    f'padding:44px 34px;min-height:440px;display:flex;flex-direction:column;'
+                    f'justify-content:center;align-items:center;text-align:center;">'
+                    f'<div style="margin-bottom:14px;">{_avatar_html}</div>'
+                    f'<div style="font:700 1.45rem/1 \'Space Grotesk\',sans-serif;color:var(--text-hi);margin-bottom:10px;">'
+                    f'{_lname}</div>'
+                    f'<div style="margin-bottom:16px;">{_badge_html}</div>'
+                    f'<div style="color:var(--text-mid);font-size:.9rem;line-height:1.5;">'
+                    f'One quick setup to personalise<br>your dynasty command centre.</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+            # ── Right panel — team + value source form ────────────────────────
+            with _su_r:
+                st.markdown('<div class="eyebrow" style="margin-top:10px;">Quick setup</div>',
+                            unsafe_allow_html=True)
+                st.markdown('<h2 style="margin:.25rem 0 .6rem;">Your team &amp; preferences</h2>',
+                            unsafe_allow_html=True)
+                st.caption("You can change these anytime from Settings.")
+
+                st.markdown('<div class="eyebrow" style="margin-top:14px;">Your team</div>',
+                            unsafe_allow_html=True)
+                _setup_team_sel = st.selectbox(
+                    "Your team", _teams0, index=_default_team_idx,
+                    key="setup_team", label_visibility="collapsed")
+
+                _vs_options = available_value_sources(num_qbs, owner_view)
+                st.markdown('<div class="eyebrow" style="margin-top:14px;">Value source</div>',
+                            unsafe_allow_html=True)
+                _setup_vs_sel = st.selectbox(
+                    "Value source", _vs_options,
+                    index=(_vs_options.index(_lp0.get("value_source", "FC Dynasty"))
+                           if _lp0.get("value_source") in _vs_options else 0),
+                    key="setup_vs", format_func=vs_label, label_visibility="collapsed")
+
+                # Dynamic per-source description + link
+                _vs_blurb, _vs_url = _VS_INFO.get(_setup_vs_sel, ("", None))
+                if _vs_blurb:
+                    _link_md = f" [Visit site →]({_vs_url})" if _vs_url else ""
+                    st.caption(f"{_vs_blurb}{_link_md}")
+
+                st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+                if st.button("Continue →", type="primary", key="setup_go", width="stretch"):
+                    _setup_ph.empty()
+                    save_league_prefs(league_id, value_source=_setup_vs_sel, team=_setup_team_sel)
+                    st.session_state.pop("_prefs_seeded_for", None)
                     st.session_state._onboarded_for = league_id
                     st.rerun()
-                if st.button("Switch league", key="setup_switch"):
+                if st.button("← Back", key="setup_switch", width="stretch"):
                     st.session_state.league_id = None
                     st.rerun()
         st.stop()
@@ -4756,67 +4832,12 @@ elif page == "Draft Room":
         if st.button("Clear board", key="dr_clear", width="stretch",
                      help="Unlock every pick and reset the whole board back to estimates."):
             for pick in ordered_picks:
-                st.session_state.pop(f"dr_sel_{pick.replace('.', '_')}", None)
+                st.session_state[f"dr_sel_{pick.replace('.', '_')}"] = ""
             st.session_state.draft_confirmed = {}
             clear_draft_selections(league_id)
             st.rerun()
 
-    # ── Settings strip (slider tucked behind "Edit settings", not dominating the top) ──
-    st.markdown(
-        f'<div style="margin:4px 0 2px;color:var(--text-mid);font-size:.86rem;">'
-        f'Mode: <strong style="color:var(--text-hi);">{_mode}</strong>'
-        f'&nbsp;·&nbsp; Need Reach: <strong style="color:var(--text-hi);">{_reach_pct}%</strong>'
-        f'&nbsp;·&nbsp; Value source: <strong style="color:var(--text-hi);">{vs_label(value_source)}</strong></div>',
-        unsafe_allow_html=True)
-    with st.expander("Edit settings"):
-        st.caption("**Need Reach Limit** — how far a team reaches for positional need over Best "
-                   "Player Available. 0% = pure BPA · 40% = heavily need-driven. Shared with Settings.")
-        st.slider("Need Reach Limit", min_value=0, max_value=40, value=15, step=5,
-                  format="%d%%", key="reach_limit_pct", label_visibility="collapsed")
-
-    # ── Live on-the-clock alert — leads with who is picking NOW ──────────────────
-    _pick_team    = dict(zip(df_cur["Pick"], df_cur["Team"]))
-    _unconfirmed  = [p for p in ordered_picks if p not in confirmed]
-    on_clock_pick = _unconfirmed[0] if _unconfirmed else None
-    on_deck_pick  = _unconfirmed[1] if len(_unconfirmed) > 1 else None
-    my_next_pick  = next((p for p in _unconfirmed if _pick_team.get(p) == my_team), None) if my_team else None
-
-    if not _unconfirmed:
-        st.success("Every pick on the board is locked — draft complete.", icon=":material/check_circle:")
-    elif not my_team:
-        st.info("Pick your team in Settings to get a live on-the-clock alert for your picks.",
-                icon=":material/sports_football:")
-    else:
-        on_clock_team = _pick_team.get(on_clock_pick, "").strip()
-        on_deck_team  = _pick_team.get(on_deck_pick, "").strip() if on_deck_pick else ""
-        _you_on_clock = (my_next_pick == on_clock_pick)
-        if _you_on_clock:
-            _accent, _fg = "var(--green-bright)", "var(--pill-green-fg)"
-            _bg = "var(--row-you-bg)"
-            _dot = '<span class="dlh-dot green"></span>'
-            _head = f"You're on the clock — make pick <strong>{my_next_pick}</strong>"
-            _sub  = f"{on_deck_team} is on deck" if on_deck_team else ""
-        else:
-            _accent, _fg = "var(--gold)", "var(--pill-gold-fg)"
-            _bg = "var(--pill-gold-bg)"
-            _dot = '<span class="dlh-dot"></span>'
-            _head = f"<strong>{on_clock_team}</strong> is on the clock — {on_clock_pick}"
-            if my_next_pick:
-                _n   = _unconfirmed.index(my_next_pick)
-                _sub = f"Your pick (<strong>{my_next_pick}</strong>) is {plural(_n, 'pick')} away"
-                if on_deck_team:
-                    _sub += f" · {on_deck_team} on deck"
-            else:
-                _sub = (f"{on_deck_team} is on deck" if on_deck_team else "")
-        _sub_html = (f'<div style="color:var(--text-mid);font-size:.82rem;margin-top:3px;">{_sub}</div>'
-                     if _sub else "")
-        st.markdown(
-            f'<div style="display:flex;align-items:center;gap:12px;margin:14px 0 8px;background:{_bg};'
-            f'border:1px solid {_accent};border-left:4px solid {_accent};border-radius:10px;padding:12px 16px;">'
-            f'{_dot}<div><div style="color:{_fg};font-size:.95rem;">{_head}</div>{_sub_html}</div></div>',
-            unsafe_allow_html=True)
-
-    # Shared position-chip helper (used by the board and the rookie pool)
+    # Shared position-chip helper (used by both tabs)
     def _pos_chip(pos):
         _pbg, _pfg, _ = POS_PALETTE.get(pos if pos in POS_PALETTE else "PICK",
                                         ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
@@ -4833,19 +4854,73 @@ elif page == "Draft Room":
 
     tab_board, tab_pool = st.tabs([f"{curr_year} Draft Board", "Available Rookie Pool"])
 
-    # ── Tab 1: Draft board — styled war-room rows (not a dataframe) ──────────────
+    # ── Tab 1: Draft board ────────────────────────────────────────────────────────
     with tab_board:
+        # Settings strip (slider tucked behind "Edit settings")
+        st.markdown(
+            f'<div style="margin:4px 0 2px;color:var(--text-mid);font-size:.86rem;">'
+            f'Mode: <strong style="color:var(--text-hi);">{_mode}</strong>'
+            f'&nbsp;·&nbsp; Need Reach: <strong style="color:var(--text-hi);">{_reach_pct}%</strong>'
+            f'&nbsp;·&nbsp; Value source: <strong style="color:var(--text-hi);">{vs_label(value_source)}</strong></div>',
+            unsafe_allow_html=True)
+        with st.expander("Edit settings"):
+            st.caption("**Need Reach Limit** — how far a team reaches for positional need over Best "
+                       "Player Available. 0% = pure BPA · 40% = heavily need-driven. Shared with Settings.")
+            st.slider("Need Reach Limit", min_value=0, max_value=40, value=15, step=5,
+                      format="%d%%", key="reach_limit_pct", label_visibility="collapsed")
+
+        # Live on-the-clock alert
+        _pick_team    = dict(zip(df_cur["Pick"], df_cur["Team"]))
+        _unconfirmed  = [p for p in ordered_picks if p not in confirmed]
+        on_clock_pick = _unconfirmed[0] if _unconfirmed else None
+        on_deck_pick  = _unconfirmed[1] if len(_unconfirmed) > 1 else None
+        my_next_pick  = next((p for p in _unconfirmed if _pick_team.get(p) == my_team), None) if my_team else None
+
+        if not _unconfirmed:
+            st.success("Every pick on the board is locked — draft complete.", icon=":material/check_circle:")
+        elif not my_team:
+            st.info("Pick your team in Settings to get a live on-the-clock alert for your picks.",
+                    icon=":material/sports_football:")
+        else:
+            on_clock_team = _pick_team.get(on_clock_pick, "").strip()
+            on_deck_team  = _pick_team.get(on_deck_pick, "").strip() if on_deck_pick else ""
+            _you_on_clock = (my_next_pick == on_clock_pick)
+            if _you_on_clock:
+                _accent, _fg = "var(--green-bright)", "var(--pill-green-fg)"
+                _bg = "var(--row-you-bg)"
+                _dot = '<span class="dlh-dot green"></span>'
+                _head = f"You're on the clock — make pick <strong>{my_next_pick}</strong>"
+                _sub  = f"{on_deck_team} is on deck" if on_deck_team else ""
+            else:
+                _accent, _fg = "var(--gold)", "var(--pill-gold-fg)"
+                _bg = "var(--pill-gold-bg)"
+                _dot = '<span class="dlh-dot"></span>'
+                _head = f"<strong>{on_clock_team}</strong> is on the clock — {on_clock_pick}"
+                if my_next_pick:
+                    _n   = _unconfirmed.index(my_next_pick)
+                    _sub = f"Your pick (<strong>{my_next_pick}</strong>) is {plural(_n, 'pick')} away"
+                    if on_deck_team:
+                        _sub += f" · {on_deck_team} on deck"
+                else:
+                    _sub = (f"{on_deck_team} is on deck" if on_deck_team else "")
+            _sub_html = (f'<div style="color:var(--text-mid);font-size:.82rem;margin-top:3px;">{_sub}</div>'
+                         if _sub else "")
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:12px;margin:14px 0 8px;background:{_bg};'
+                f'border:1px solid {_accent};border-left:4px solid {_accent};border-radius:10px;padding:12px 16px;">'
+                f'{_dot}<div><div style="color:{_fg};font-size:.95rem;">{_head}</div>{_sub_html}</div></div>',
+                unsafe_allow_html=True)
+
         st.caption("Use **Select** on any upcoming pick to lock the rookie taken — the board saves and "
                    "re-estimates the remaining picks automatically (no full reload). Your picks carry a "
                    "green rail so they're easy to find.")
 
-        # The board lives in a fragment so a rookie selection reruns ONLY the fragment first
-        # (fast — skips the heavy sim at the top of the page); we then trigger one controlled
-        # full rerun to re-estimate downstream picks. Same no-double-full-reload contract as the
-        # old data_editor (B5 fix) — only the visual layer changed from a dataframe to rows.
+        # Board lives in a fragment: rookie selection reruns only the fragment (B5 fix preserved).
         @st.fragment
         def _draft_board_fragment():
-            st.markdown(
+            # Column headers use the same [6, 1.15] layout as the data rows — guarantees alignment.
+            _hdr_info, _hdr_act = st.columns([6, 1.15])
+            _hdr_info.markdown(
                 '<div style="display:flex;align-items:center;gap:10px;padding:2px 14px 4px 17px;'
                 'font:600 11px/1 \'Inter\',sans-serif;letter-spacing:1px;text-transform:uppercase;'
                 'color:var(--text-low);">'
@@ -4856,64 +4931,68 @@ elif page == "Draft Room":
                 '<span style="flex:0 0 64px;text-align:right;">FC Val</span>'
                 '<span style="flex:1.3;padding-left:12px;">Logic</span>'
                 '</div>', unsafe_allow_html=True)
+            _hdr_act.markdown(
+                '<div style="font:600 11px/1 \'Inter\',sans-serif;letter-spacing:1px;text-transform:uppercase;'
+                'color:var(--text-low);text-align:center;padding-top:4px;">Select</div>',
+                unsafe_allow_html=True)
 
             _opts = [""] + rookie_names
-            for _, row in df_cur.iterrows():
-                pick   = row["Pick"]
-                team   = (row["Team"] or "").strip()
-                sel    = rookie_sels.get(pick, {})
-                locked = pick in confirmed
-                is_you = bool(my_team) and row["Team"] == my_team
-                is_clk = (pick == on_clock_pick)
+            with st.container(height=520):
+                for _, row in df_cur.iterrows():
+                    pick   = row["Pick"]
+                    team   = (row["Team"] or "").strip()
+                    sel    = rookie_sels.get(pick, {})
+                    locked = pick in confirmed
+                    is_you = bool(my_team) and row["Team"] == my_team
+                    is_clk = (pick == on_clock_pick)
 
-                est_name = (confirmed.get(pick) if locked else sel.get("name")) or "—"
-                pos      = sel.get("pos", "—")
-                fcval    = sel.get("value")
-                logic    = sel.get("reason", "—") if not locked else "Confirmed"
+                    est_name = (confirmed.get(pick) if locked else sel.get("name")) or "—"
+                    pos      = sel.get("pos", "—")
+                    fcval    = sel.get("value")
+                    logic    = sel.get("reason", "—") if not locked else "Confirmed"
 
-                if locked:
-                    _bg, _rail = "var(--bg-inset)", "transparent"
-                    _team_col, _txt, _pick_col = "var(--text-mid)", "var(--text-mid)", "var(--text-low)"
-                    _state = '<span class="pill green" style="font-size:.64rem;padding:2px 9px;">&#10003; Locked</span>'
-                elif is_clk:
-                    _bg, _rail = "var(--pill-gold-bg)", "var(--gold)"
-                    _team_col, _txt, _pick_col = "var(--pill-gold-fg)", "var(--text-hi)", "var(--pill-gold-fg)"
-                    _state = ('<span class="pill gold dlh-live-pill" style="font-size:.64rem;padding:2px 9px;'
-                              'display:inline-flex;align-items:center;gap:5px;"><span class="dlh-dot"></span>On Clock</span>')
-                elif is_you:
-                    _bg, _rail = "var(--row-you-bg)", "var(--green-bright)"
-                    _team_col, _txt, _pick_col = "var(--green-bright)", "var(--text-hi)", "var(--green-bright)"
-                    _state = ''
-                else:
-                    _bg, _rail = "var(--bg-surface)", "transparent"
-                    _team_col, _txt, _pick_col = "var(--text-body)", "var(--text-hi)", "var(--text-mid)"
-                    _state = ''
+                    if locked:
+                        _bg, _rail = "var(--bg-inset)", "transparent"
+                        _team_col, _txt, _pick_col = "var(--text-mid)", "var(--text-mid)", "var(--text-low)"
+                        _state = '<span class="pill green" style="font-size:.64rem;padding:2px 9px;">&#10003; Locked</span>'
+                    elif is_clk:
+                        _bg, _rail = "var(--pill-gold-bg)", "var(--gold)"
+                        _team_col, _txt, _pick_col = "var(--pill-gold-fg)", "var(--text-hi)", "var(--pill-gold-fg)"
+                        _state = ('<span class="pill gold dlh-live-pill" style="font-size:.64rem;padding:2px 9px;'
+                                  'display:inline-flex;align-items:center;gap:5px;"><span class="dlh-dot"></span>On Clock</span>')
+                    elif is_you:
+                        _bg, _rail = "var(--row-you-bg)", "var(--green-bright)"
+                        _team_col, _txt, _pick_col = "var(--green-bright)", "var(--text-hi)", "var(--green-bright)"
+                        _state = ''
+                    else:
+                        _bg, _rail = "var(--bg-surface)", "transparent"
+                        _team_col, _txt, _pick_col = "var(--text-body)", "var(--text-hi)", "var(--text-mid)"
+                        _state = ''
 
-                _fcval_s = f"{int(fcval):,}" if (fcval is not None and pd.notna(fcval)) else "—"
+                    _fcval_s = f"{int(fcval):,}" if (fcval is not None and pd.notna(fcval)) else "—"
 
-                c_info, c_sel = st.columns([6, 1.15], vertical_alignment="center")
-                c_info.markdown(
-                    f'<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;margin:3px 0;'
-                    f'border-radius:8px;background:{_bg};border-left:3px solid {_rail};">'
-                    f'<span style="flex:0 0 50px;font-weight:700;color:{_pick_col};">{pick}</span>'
-                    f'<span style="flex:0 0 150px;font-weight:600;color:{_team_col};overflow:hidden;'
-                    f'text-overflow:ellipsis;white-space:nowrap;">{team}</span>'
-                    f'<span style="flex:1;color:{_txt};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{est_name}</span>'
-                    f'<span style="flex:0 0 46px;text-align:center;">{_pos_chip(pos)}</span>'
-                    f'<span style="flex:0 0 64px;text-align:right;color:var(--text-mid);font-variant-numeric:tabular-nums;">{_fcval_s}</span>'
-                    f'<span style="flex:1.3;padding-left:12px;color:var(--text-mid);font-size:.82rem;'
-                    f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{logic}</span>'
-                    f'<span style="flex:0 0 auto;">{_state}</span>'
-                    f'</div>', unsafe_allow_html=True)
+                    c_info, c_sel = st.columns([6, 1.15], vertical_alignment="center")
+                    c_info.markdown(
+                        f'<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;margin:3px 0;'
+                        f'border-radius:8px;background:{_bg};border-left:3px solid {_rail};">'
+                        f'<span style="flex:0 0 50px;font-weight:700;color:{_pick_col};">{pick}</span>'
+                        f'<span style="flex:0 0 150px;font-weight:600;color:{_team_col};overflow:hidden;'
+                        f'text-overflow:ellipsis;white-space:nowrap;">{team}</span>'
+                        f'<span style="flex:1;color:{_txt};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{est_name}</span>'
+                        f'<span style="flex:0 0 46px;text-align:center;">{_pos_chip(pos)}</span>'
+                        f'<span style="flex:0 0 64px;text-align:right;color:var(--text-mid);font-variant-numeric:tabular-nums;">{_fcval_s}</span>'
+                        f'<span style="flex:1.3;padding-left:12px;color:var(--text-mid);font-size:.82rem;'
+                        f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{logic}</span>'
+                        f'<span style="flex:0 0 auto;">{_state}</span>'
+                        f'</div>', unsafe_allow_html=True)
 
-                _safe = pick.replace(".", "_")
-                _idx  = _opts.index(confirmed[pick]) if (locked and confirmed.get(pick) in _opts) else 0
-                _empty_lbl = "Select rookie ▾" if is_you else "Select ▾"
-                c_sel.selectbox(
-                    f"Select rookie for pick {pick}", _opts, index=_idx,
-                    key=f"dr_sel_{_safe}", label_visibility="collapsed",
-                    format_func=lambda x, _e=_empty_lbl: _e if x == "" else x,
-                )
+                    _safe = pick.replace(".", "_")
+                    _idx  = _opts.index(confirmed[pick]) if (locked and confirmed.get(pick) in _opts) else 0
+                    c_sel.selectbox(
+                        f"Select rookie for pick {pick}", _opts, index=_idx,
+                        key=f"dr_sel_{_safe}", label_visibility="collapsed",
+                        format_func=lambda x: "Select" if x == "" else x,
+                    )
 
             # Confirmed picks are driven by the per-row selectboxes alone.
             _new_confirmed = {}
@@ -4938,14 +5017,12 @@ elif page == "Draft Room":
         _tb_c1, _tb_c2 = st.columns([3, 1], vertical_alignment="center")
         _tb_c1.caption("**Trade Block** — your shopped players live in the Trade Room, handy when "
                        "weighing pick-for-player swaps mid-draft.")
-        # Set nav target in an on_click callback (runs before the nav radio re-instantiates,
-        # so it's allowed to change the widget-keyed nav_page) — same trick the other deep-links use.
         def _goto_trade_room():
             st.session_state.nav_page = "Trade Room"
         _tb_c2.button("Open Trade Block →", key="dr_tradeblock", width="stretch",
                       on_click=_goto_trade_room)
 
-    # ── Tab 2: Available Rookie Pool — themed rows in a scrollable grid ──────────
+    # ── Tab 2: Available Rookie Pool ──────────────────────────────────────────────
     with tab_pool:
         taken_names = set(confirmed.values())
         pool_src = sorted(
@@ -4954,7 +5031,7 @@ elif page == "Draft Room":
              and r.get("name") not in taken_names],
             key=lambda r: r.get("value", 0), reverse=True,
         )
-        pool_ranked = list(enumerate(pool_src, 1))   # (overall_rank, rookie)
+        pool_ranked = list(enumerate(pool_src, 1))
 
         pc1, pc2, pc3 = st.columns([2, 3, 1])
         pool_pos  = pc1.multiselect("Filter by position", SKILL_POSITIONS, key="dr_pool_pos")
@@ -4980,7 +5057,9 @@ elif page == "Draft Room":
                 st.info("No rookies match the current filters.")
                 return
 
-            st.markdown(
+            # Column headers use the same [7, 0.7] layout as the data rows.
+            _ph_ci, _ph_cf = st.columns([7, 0.7])
+            _ph_ci.markdown(
                 '<div style="display:flex;align-items:center;gap:10px;padding:2px 14px 4px 17px;'
                 'font:600 11px/1 \'Inter\',sans-serif;letter-spacing:1px;text-transform:uppercase;'
                 'color:var(--text-low);">'
@@ -4989,8 +5068,11 @@ elif page == "Draft Room":
                 '<span style="flex:0 0 46px;text-align:center;">Pos</span>'
                 '<span style="flex:0 0 70px;text-align:right;">FC Val</span>'
                 '<span style="flex:0 0 70px;text-align:right;">Tier</span>'
-                '<span style="flex:0 0 36px;text-align:center;">Fav</span>'
                 '</div>', unsafe_allow_html=True)
+            _ph_cf.markdown(
+                '<div style="font:600 11px/1 \'Inter\',sans-serif;letter-spacing:1px;text-transform:uppercase;'
+                'color:var(--text-low);text-align:center;padding-top:4px;">Fav</div>',
+                unsafe_allow_html=True)
 
             with st.container(height=460):
                 for rank, r in rows:
