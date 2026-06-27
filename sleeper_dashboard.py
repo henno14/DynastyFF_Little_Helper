@@ -1794,6 +1794,72 @@ def rank_trade_partners(rid, td, team_data, untouchable, my_need, my_surplus):
     return rows
 
 
+def find_top_targets(rid, td, team_data, all_players_by_pos, player_tags, use_trade_block=False):
+    """One best target player per weak position, tagged as Good Fit or Hard Get.
+
+    Fit score = avg(their surplus at need_pos, their need for user's chip position).
+    Good Fit >= 35, Hard Get < 35.
+    use_trade_block=True restricts chips to Trade Block tagged players only.
+    """
+    untouchable  = {nm for nm, t in player_tags.items() if t == "Untouchable"}
+    block_names  = {nm for nm, t in player_tags.items() if t == "Trade Block"}
+
+    if use_trade_block and block_names:
+        chip_players = []
+        for pos in SKILL_POSITIONS:
+            for p in td.get("pos_players", {}).get(pos, []):
+                if p["name"] in block_names:
+                    chip_players.append({**p, "_pos": pos})
+    else:
+        surplus_pos  = td.get("surplus_pos")
+        chip_players = [{**p, "_pos": surplus_pos}
+                        for p in td.get("pos_players", {}).get(surplus_pos or "", [])
+                        if p["name"] not in untouchable] if surplus_pos else []
+
+    my_chip     = max(chip_players, key=lambda p: p.get("value") or 0) if chip_players else None
+    my_chip_pos = my_chip.get("_pos") if my_chip else td.get("surplus_pos")
+
+    needs = sorted(
+        [(pos, score) for pos, score in td.get("need_scores", {}).items()
+         if score and score > 0 and pos in SKILL_POSITIONS],
+        key=lambda x: -x[1],
+    )[:3]
+
+    results = []
+    for need_pos, _ in needs:
+        candidates = sorted(
+            [p for p in all_players_by_pos.get(need_pos, []) if p["on_team_rid"] != rid],
+            key=lambda p: p.get("value") or 0,
+            reverse=True,
+        )
+        best_good, best_any = None, None
+        for player in candidates:
+            o_td       = team_data.get(player["on_team_rid"], {})
+            their_sup  = o_td.get("surplus_scores", {}).get(need_pos, 0)
+            their_need = o_td.get("need_scores", {}).get(my_chip_pos, 0) if my_chip_pos else 0
+            fit        = (their_sup + their_need) / 2
+            if best_any is None:
+                best_any = (player, o_td.get("name", ""), fit)
+            if fit >= 35 and best_good is None:
+                best_good = (player, o_td.get("name", ""), fit)
+                break
+
+        chosen = best_good or best_any
+        if not chosen:
+            continue
+        player, team_name, fit_score = chosen
+        results.append({
+            "pos":       need_pos,
+            "player":    player,
+            "team_name": team_name,
+            "fit_tag":   "Good Fit" if fit_score >= 35 else "Hard Get",
+            "fit_score": round(fit_score),
+            "chip_name": my_chip["name"] if my_chip else None,
+            "chip_pos":  my_chip_pos,
+        })
+    return results
+
+
 def suggest_sweetener(team_data, from_rid, target_needs, shortfall, exclude_names=(),
                       untouchable=()):
     """The single best balancing asset on `from_rid`'s roster: fills `target_needs`
@@ -2097,7 +2163,63 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
         else:
             st.caption("No clean value-matched partner right now — see the Trade Room for options.")
 
-    # Panel 4 — Cut-for-Pickup
+    # Panel 4 — Top Targets
+    with st.container(border=True):
+        _tt_hdr, _tt_tog = st.columns([3, 2])
+        _tt_hdr.markdown('<div class="eyebrow" style="margin-bottom:2px;">Top Targets</div>', unsafe_allow_html=True)
+        _tt_hdr.markdown(
+            '<div style="font-size:.74rem;color:var(--text-mid);">Best player to chase per weak position</div>',
+            unsafe_allow_html=True)
+        _use_block = _tt_tog.toggle(
+            "Trade block chips only", value=False, key="targets_use_block",
+            help="ON = only your Trade Block players used as chips when scoring fit")
+
+        _targets = find_top_targets(
+            rid, td, team_data, all_players_by_pos,
+            st.session_state.get("player_tags", {}),
+            use_trade_block=_use_block,
+        )
+        if _targets:
+            _t_cards = []
+            for t in _targets:
+                _pos      = t["pos"]
+                _pl       = t["player"]
+                _pbg, _pfg, _acc = POS_PALETTE.get(_pos, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                _val      = _pl.get("value") or 0
+                _nm       = _html.escape(_pl.get("name") or "—")
+                _team     = _html.escape(t["team_name"])
+                _chip     = _html.escape(t["chip_name"]) if t.get("chip_name") else "—"
+                _chip_pos = t.get("chip_pos") or ""
+                _is_fit   = t["fit_tag"] == "Good Fit"
+                _tag_bg   = "var(--pill-green-bg)" if _is_fit else "var(--pill-gold-bg)"
+                _tag_fg   = "var(--pill-green-fg)" if _is_fit else "var(--pill-gold-fg)"
+                _tag_lbl  = "Good Fit" if _is_fit else "Hard Get"
+                _chip_hint = (f'<div style="font-size:.68rem;color:var(--text-mid);margin-top:3px;">'
+                              f'Offer: <strong style="color:var(--text-body);">{_chip}</strong>'
+                              f'{" (" + _html.escape(_chip_pos) + ")" if _chip_pos else ""}</div>')
+                _t_cards.append(
+                    f'<div style="display:flex;align-items:center;gap:11px;background:var(--bg-surface);'
+                    f'border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:7px;">'
+                    f'<div style="flex:0 0 auto;width:32px;height:32px;border-radius:8px;background:var({_pbg});'
+                    f'color:var({_pfg});display:flex;align-items:center;justify-content:center;'
+                    f'font-weight:700;font-size:.76rem;">{POS_ABBR.get(_pos, _pos)}</div>'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<div style="font-size:.86rem;color:var(--text-hi);">'
+                    f'<strong>{_nm}</strong> '
+                    f'<span style="font-size:.74rem;color:var(--text-mid);">{_val:,}</span></div>'
+                    f'<div style="font-size:.74rem;color:var(--text-mid);">{_team}</div>'
+                    f'{_chip_hint}'
+                    f'</div>'
+                    f'<div style="flex:0 0 auto;">'
+                    f'<span style="background:{_tag_bg};color:{_tag_fg};font-size:.68rem;font-weight:600;'
+                    f'padding:2px 8px;border-radius:999px;white-space:nowrap;">{_tag_lbl}</span>'
+                    f'</div></div>'
+                )
+            st.markdown("".join(_t_cards), unsafe_allow_html=True)
+        else:
+            st.caption("No clear targets found — roster may be balanced or no trade fits exist.")
+
+    # Panel 5 — Cut-for-Pickup
     st.markdown("#### :material/autorenew: Cut-for-Pickup")
     _, _drops = load_trending()
     drop_counts = {str(d["player_id"]): d.get("count", 0) for d in (_drops or [])}
