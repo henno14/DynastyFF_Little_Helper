@@ -1800,6 +1800,10 @@ def find_top_targets(rid, td, team_data, all_players_by_pos, player_tags, use_tr
     Fit score = avg(their surplus at need_pos, their need for user's chip position).
     Good Fit >= 35, Hard Get < 35.
     use_trade_block=True restricts chips to Trade Block tagged players only.
+
+    When the primary chip's value falls >15% short of the target, suggest_sweetener
+    is called to find one or two add-on pieces that close the gap, preferring assets
+    the target team also needs.
     """
     untouchable  = {nm for nm, t in player_tags.items() if t == "Untouchable"}
     block_names  = {nm for nm, t in player_tags.items() if t == "Trade Block"}
@@ -1818,6 +1822,7 @@ def find_top_targets(rid, td, team_data, all_players_by_pos, player_tags, use_tr
 
     my_chip     = max(chip_players, key=lambda p: p.get("value") or 0) if chip_players else None
     my_chip_pos = my_chip.get("_pos") if my_chip else td.get("surplus_pos")
+    my_chip_val = (my_chip.get("value") or 0) if my_chip else 0
 
     needs = sorted(
         [(pos, score) for pos, score in td.get("need_scores", {}).items()
@@ -1839,23 +1844,50 @@ def find_top_targets(rid, td, team_data, all_players_by_pos, player_tags, use_tr
             their_need = o_td.get("need_scores", {}).get(my_chip_pos, 0) if my_chip_pos else 0
             fit        = (their_sup + their_need) / 2
             if best_any is None:
-                best_any = (player, o_td.get("name", ""), fit)
+                best_any = (player, o_td.get("name", ""), player["on_team_rid"], fit)
             if fit >= 35 and best_good is None:
-                best_good = (player, o_td.get("name", ""), fit)
+                best_good = (player, o_td.get("name", ""), player["on_team_rid"], fit)
                 break
 
         chosen = best_good or best_any
         if not chosen:
             continue
-        player, team_name, fit_score = chosen
+        player, team_name, o_rid, fit_score = chosen
+        target_val = player.get("value") or 0
+
+        # Build offer package — add sweetener(s) when primary chip undershoots by >15%
+        chips = [{"name": my_chip["name"], "pos": my_chip_pos, "value": my_chip_val}] if my_chip else []
+        package_val = my_chip_val
+        o_td = team_data.get(o_rid, {})
+        their_needs = o_td.get("need_scores", {}) if o_td else {}
+
+        if target_val > 0 and package_val < target_val * 0.85:
+            shortfall = target_val - package_val
+            exclude   = {my_chip["name"]} if my_chip else set()
+            sw = suggest_sweetener(team_data, rid, their_needs, shortfall,
+                                   exclude_names=exclude, untouchable=untouchable)
+            if sw:
+                chips.append({"name": sw["name"], "pos": sw["pos"], "value": sw["value"]})
+                package_val += sw["value"]
+                # If still >15% short after first sweetener, try one more
+                if package_val < target_val * 0.85:
+                    shortfall2 = target_val - package_val
+                    exclude2   = exclude | {sw["name"]}
+                    sw2 = suggest_sweetener(team_data, rid, their_needs, shortfall2,
+                                            exclude_names=exclude2, untouchable=untouchable)
+                    if sw2:
+                        chips.append({"name": sw2["name"], "pos": sw2["pos"], "value": sw2["value"]})
+                        package_val += sw2["value"]
+
         results.append({
-            "pos":       need_pos,
-            "player":    player,
-            "team_name": team_name,
-            "fit_tag":   "Good Fit" if fit_score >= 35 else "Hard Get",
-            "fit_score": round(fit_score),
-            "chip_name": my_chip["name"] if my_chip else None,
-            "chip_pos":  my_chip_pos,
+            "pos":         need_pos,
+            "player":      player,
+            "team_name":   team_name,
+            "fit_tag":     "Good Fit" if fit_score >= 35 else "Hard Get",
+            "fit_score":   round(fit_score),
+            "chips":       chips,
+            "package_val": package_val,
+            "target_val":  target_val,
         })
     return results
 
@@ -2185,18 +2217,33 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                 _pos      = t["pos"]
                 _pl       = t["player"]
                 _pbg, _pfg, _acc = POS_PALETTE.get(_pos, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
-                _val      = _pl.get("value") or 0
+                _tval     = t["target_val"]
+                _pval     = t["package_val"]
                 _nm       = _html.escape(_pl.get("name") or "—")
                 _team     = _html.escape(t["team_name"])
-                _chip     = _html.escape(t["chip_name"]) if t.get("chip_name") else "—"
-                _chip_pos = t.get("chip_pos") or ""
                 _is_fit   = t["fit_tag"] == "Good Fit"
                 _tag_bg   = "var(--pill-green-bg)" if _is_fit else "var(--pill-gold-bg)"
                 _tag_fg   = "var(--pill-green-fg)" if _is_fit else "var(--pill-gold-fg)"
                 _tag_lbl  = "Good Fit" if _is_fit else "Hard Get"
-                _chip_hint = (f'<div style="font-size:.68rem;color:var(--text-mid);margin-top:3px;">'
-                              f'Offer: <strong style="color:var(--text-body);">{_chip}</strong>'
-                              f'{" (" + _html.escape(_chip_pos) + ")" if _chip_pos else ""}</div>')
+
+                # Build offer string: "Jordan Love (QB) + 2025 1st (PICK)"
+                _chip_parts = []
+                for _ch in t.get("chips", []):
+                    _cp = _html.escape(_ch.get("pos") or "")
+                    _cn = _html.escape(_ch.get("name") or "")
+                    _chip_parts.append(f'<strong style="color:var(--text-body);">{_cn}</strong>'
+                                       f'<span style="color:var(--text-low);"> ({_cp})</span>')
+                _offer_str  = ' <span style="color:var(--text-faint);">+</span> '.join(_chip_parts) if _chip_parts else "—"
+
+                # Value gap indicator
+                _gap_pct  = round((_tval - _pval) / _tval * 100) if _tval > 0 else 0
+                if abs(_gap_pct) <= 10:
+                    _gap_col, _gap_txt = "var(--green)", f"±{abs(_gap_pct)}% value"
+                elif _gap_pct > 0:
+                    _gap_col, _gap_txt = "var(--gold)", f"You send {_gap_pct}% less"
+                else:
+                    _gap_col, _gap_txt = "var(--pill-red-fg)", f"You send {abs(_gap_pct)}% more"
+
                 _t_cards.append(
                     f'<div style="display:flex;align-items:center;gap:11px;background:var(--bg-surface);'
                     f'border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:7px;">'
@@ -2206,9 +2253,10 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                     f'<div style="flex:1;min-width:0;">'
                     f'<div style="font-size:.86rem;color:var(--text-hi);">'
                     f'<strong>{_nm}</strong> '
-                    f'<span style="font-size:.74rem;color:var(--text-mid);">{_val:,}</span></div>'
-                    f'<div style="font-size:.74rem;color:var(--text-mid);">{_team}</div>'
-                    f'{_chip_hint}'
+                    f'<span style="font-size:.74rem;color:var(--text-mid);">{_tval:,}</span></div>'
+                    f'<div style="font-size:.74rem;color:var(--text-mid);margin:2px 0 1px;">{_team}</div>'
+                    f'<div style="font-size:.72rem;color:var(--text-mid);">Offer: {_offer_str}</div>'
+                    f'<div style="font-size:.68rem;color:{_gap_col};margin-top:2px;">{_gap_txt} · package {_pval:,}</div>'
                     f'</div>'
                     f'<div style="flex:0 0 auto;">'
                     f'<span style="background:{_tag_bg};color:{_tag_fg};font-size:.68rem;font-weight:600;'
