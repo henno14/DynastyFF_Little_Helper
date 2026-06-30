@@ -2268,66 +2268,115 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
             st.caption("No clear targets found — roster may be balanced or no trade fits exist.")
 
     # Panel 5 — Cut-for-Pickup
-    st.markdown("#### :material/autorenew: Cut-for-Pickup")
-    _, _drops = load_trending()
-    drop_counts = {str(d["player_id"]): d.get("count", 0) for d in (_drops or [])}
-    cuts = []
-    for pos in SKILL_POSITIONS:
-        pavg = td.get("pos_avgs", {}).get(pos) or 1
-        for pp in td.get("pos_players", {}).get(pos, []):
-            pid, pobj = pp["pid"], players.get(pp["pid"], {})
-            sc, reasons = player_drop_score(
-                pp.get("value") or 0, player_pts.get(pid) or 0,
-                pobj.get("injury_status") or pobj.get("status") or "Active",
-                pobj.get("years_exp") or 0, pavg,
-                trend_drops=drop_counts.get(str(pid), 0))
-            cuts.append({"Player": pp["name"], "Pos": pos, val_col: pp.get("value") or 0,
-                         "Why": " · ".join(reasons) if reasons else "depth", "_s": sc})
-    cuts.sort(key=lambda x: -x["_s"])
-    cuts3 = [{k: v for k, v in c.items() if k != "_s"} for c in cuts[:3]]
-
-    p1, p2 = st.columns(2)
-    with p1:
-        st.markdown("**Consider cutting**")
-        # Spacer matches the Exclude-rookies checkbox height in p2 so both tables align
-        st.markdown("<div style='height:38px'></div>", unsafe_allow_html=True)
-        if cuts3:
-            st.dataframe(pd.DataFrame(cuts3), hide_index=True, width="stretch",
-                         column_config={val_col: COL_CFG["Value"]})
-        else:
-            st.caption("Roster looks lean.")
-    with p2:
-        st.markdown("**Consider adding** *(free agents)*")
-        # Checkbox return value drives the filter directly — no session-state lag.
-        _excl_rookies_add = st.checkbox(
+    with st.container(border=True):
+        _cfp_hdr, _cfp_tog = st.columns([3, 2])
+        _cfp_hdr.markdown('<div class="eyebrow" style="margin-bottom:2px;">Cut-for-Pickup</div>', unsafe_allow_html=True)
+        _cfp_hdr.markdown(
+            '<div style="font-size:.74rem;color:var(--text-mid);">Drop to make room · Add from free agency</div>',
+            unsafe_allow_html=True)
+        _excl_rookies_add = _cfp_tog.checkbox(
             "Exclude rookies", key="dash_excl_rookies_add",
-            help="Hide rookies from these free-agent suggestions.")
+            help="Hide rookies from free-agent suggestions.")
+
+        _, _drops = load_trending()
+        drop_counts = {str(d["player_id"]): d.get("count", 0) for d in (_drops or [])}
+        cuts = []
+        for pos in SKILL_POSITIONS:
+            pavg = td.get("pos_avgs", {}).get(pos) or 1
+            for pp in td.get("pos_players", {}).get(pos, []):
+                pid, pobj = pp["pid"], players.get(pp["pid"], {})
+                sc, reasons = player_drop_score(
+                    pp.get("value") or 0, player_pts.get(pid) or 0,
+                    pobj.get("injury_status") or pobj.get("status") or "Active",
+                    pobj.get("years_exp") or 0, pavg,
+                    trend_drops=drop_counts.get(str(pid), 0))
+                cuts.append({"name": pp["name"], "pos": pos, "value": pp.get("value") or 0,
+                             "why": " · ".join(reasons) if reasons else "depth", "_s": sc})
+        cuts.sort(key=lambda x: -x["_s"])
+        cuts3 = cuts[:3]
+
         df_fa = build_fa_df(rosters, players, player_pts, pos_ranks, fc_values, val_maps, value_source)
         df_fa = df_fa.rename(columns={"Value": val_col})
         if _excl_rookies_add and "Exp" in df_fa.columns:
             df_fa = df_fa[df_fa["Exp"] != "Rookie"]
-        # Adds fill skill needs — never suggest IDP/DEF/K free agents here.
         df_fa = df_fa[df_fa["Pos"].isin(SKILL_POSITIONS)]
         fa_sorted = df_fa.sort_values(val_col, ascending=False, na_position="last")
-        need_pos = [p for p, _ in sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])]
-        picks_rows, seen = [], set()
-        for pos in need_pos[:2]:
-            row = fa_sorted[fa_sorted["Pos"] == pos].head(1)
-            if not row.empty and row.iloc[0]["Player"] not in seen:
-                picks_rows.append(row.iloc[0]); seen.add(row.iloc[0]["Player"])
-        for _, r0 in fa_sorted.iterrows():
-            if len(picks_rows) >= 3:
-                break
-            if r0["Player"] not in seen:
-                picks_rows.append(r0); seen.add(r0["Player"])
-        if picks_rows:
-            _cols = [c for c in ["Player", "Pos", "NFL Team", val_col] if c in df_fa.columns]
-            st.dataframe(pd.DataFrame(picks_rows)[_cols], hide_index=True, width="stretch",
-                         column_config={val_col: COL_CFG["Value"]})
-        else:
-            st.caption("No standout free agents available.")
-    st.caption("Cuts weigh value vs positional average, production, injury, age — and "
-               "**Sleeper league-wide drops** (a high drop count = many managers dropping this player).")
+        need_pos_order = [p for p, _ in sorted(td.get("need_scores", {}).items(), key=lambda x: -x[1])]
+        picks_rows, seen_fa = [], set()
+        for _np in need_pos_order[:2]:
+            _r = fa_sorted[fa_sorted["Pos"] == _np].head(1)
+            if not _r.empty and _r.iloc[0]["Player"] not in seen_fa:
+                picks_rows.append(_r.iloc[0]); seen_fa.add(_r.iloc[0]["Player"])
+        for _, _r0 in fa_sorted.iterrows():
+            if len(picks_rows) >= 3: break
+            if _r0["Player"] not in seen_fa:
+                picks_rows.append(_r0); seen_fa.add(_r0["Player"])
+
+        # Render as two columns of styled cards matching the Positional Strength style
+        _cfp_c1, _cfp_c2 = st.columns(2)
+
+        with _cfp_c1:
+            st.markdown('<div style="font-size:.78rem;font-weight:700;color:var(--text-mid);'
+                        'text-transform:uppercase;letter-spacing:.07em;margin:8px 0 6px;">Consider Cutting</div>',
+                        unsafe_allow_html=True)
+            if cuts3:
+                _cut_cards = []
+                for _c in cuts3:
+                    _pbg, _pfg, _ = POS_PALETTE.get(_c["pos"], ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                    _cut_cards.append(
+                        f'<div style="display:flex;align-items:center;gap:11px;background:var(--bg-surface);'
+                        f'border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:7px;">'
+                        f'<div style="flex:0 0 auto;width:32px;height:32px;border-radius:8px;background:var({_pbg});'
+                        f'color:var({_pfg});display:flex;align-items:center;justify-content:center;'
+                        f'font-weight:700;font-size:.76rem;">{POS_ABBR.get(_c["pos"], _c["pos"])}</div>'
+                        f'<div style="flex:1;min-width:0;">'
+                        f'<div style="font-size:.86rem;color:var(--text-hi);">'
+                        f'<strong>{_html.escape(_c["name"])}</strong> '
+                        f'<span style="font-size:.74rem;color:var(--text-mid);">{_c["value"]:,}</span></div>'
+                        f'<div style="font-size:.72rem;color:var(--text-mid);margin-top:2px;">{_html.escape(_c["why"])}</div>'
+                        f'</div>'
+                        f'<span style="background:var(--pill-red-bg);color:var(--pill-red-fg);font-size:.65rem;'
+                        f'font-weight:600;padding:2px 7px;border-radius:999px;white-space:nowrap;">Cut</span>'
+                        f'</div>'
+                    )
+                st.markdown("".join(_cut_cards), unsafe_allow_html=True)
+            else:
+                st.caption("Roster looks lean — nothing obvious to cut.")
+
+        with _cfp_c2:
+            st.markdown('<div style="font-size:.78rem;font-weight:700;color:var(--text-mid);'
+                        'text-transform:uppercase;letter-spacing:.07em;margin:8px 0 6px;">Consider Adding</div>',
+                        unsafe_allow_html=True)
+            if picks_rows:
+                _add_cards = []
+                for _fa in picks_rows:
+                    _fpos = _fa.get("Pos", "")
+                    _pbg, _pfg, _ = POS_PALETTE.get(_fpos, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                    _fval = _fa.get(val_col) or 0
+                    _fnfl = _fa.get("NFL Team", "FA")
+                    _add_cards.append(
+                        f'<div style="display:flex;align-items:center;gap:11px;background:var(--bg-surface);'
+                        f'border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:7px;">'
+                        f'<div style="flex:0 0 auto;width:32px;height:32px;border-radius:8px;background:var({_pbg});'
+                        f'color:var({_pfg});display:flex;align-items:center;justify-content:center;'
+                        f'font-weight:700;font-size:.76rem;">{POS_ABBR.get(_fpos, _fpos)}</div>'
+                        f'<div style="flex:1;min-width:0;">'
+                        f'<div style="font-size:.86rem;color:var(--text-hi);">'
+                        f'<strong>{_html.escape(str(_fa.get("Player","—")))}</strong> '
+                        f'<span style="font-size:.74rem;color:var(--text-mid);">{int(_fval):,}</span></div>'
+                        f'<div style="font-size:.72rem;color:var(--text-mid);margin-top:2px;">'
+                        f'{_html.escape(str(_fnfl))} · Free Agent</div>'
+                        f'</div>'
+                        f'<span style="background:var(--pill-green-bg);color:var(--pill-green-fg);font-size:.65rem;'
+                        f'font-weight:600;padding:2px 7px;border-radius:999px;white-space:nowrap;">Add</span>'
+                        f'</div>'
+                    )
+                st.markdown("".join(_add_cards), unsafe_allow_html=True)
+            else:
+                st.caption("No standout free agents available.")
+
+        st.caption("Cuts weigh value vs positional average, production, injury, age — and "
+                   "**Sleeper league-wide drops** (a high drop count = many managers dropping this player).")
 
 
 # ── Fantasy News ─────────────────────────────────────────────────────────────
@@ -3089,126 +3138,6 @@ if page == "Overview":
                                   players, player_pts, rosters, pos_ranks,
                                   fc_values, val_maps, value_source, val_col)
 
-            st.markdown("---")
-            # ── League Power Rankings table ───────────────────────────────────────────
-            st.subheader("League Power Rankings")
-
-            _cb1, _cb2, _ = st.columns([1, 1, 4])
-            _excl_def   = _cb1.checkbox("Exclude DEF",   key="pr_excl_def")
-            _excl_picks = _cb2.checkbox("Exclude Picks", key="pr_excl_picks")
-
-            _active_dims = ["QB", "RB", "WR", "TE"]
-            if not _excl_picks: _active_dims.append("PICK")
-            if not _excl_def:   _active_dims.append("DEF")
-            _dim_count = len(_active_dims)
-            st.caption(f"Score = average normalised rank across {_dim_count} dimension{'s' if _dim_count != 1 else ''}: {', '.join(_active_dims).replace('PICK','Picks')}")
-
-            _n = len(team_data)
-
-            # DEF ranks — sort teams by avg def pts descending
-            _def_vals  = {rid: (def_analysis.get(rid) or {}).get("avg_pts") for rid in team_data}
-            _def_order = sorted([x for x in _def_vals.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
-            _def_rank_map = {rid: i + 1 for i, (rid, _) in enumerate(_def_order)}
-
-            # Build one row per team
-            _pr_rows = []
-            for rid, _td in team_data.items():
-                _lr = {**_td.get("pos_league_rank", {}), "DEF": _def_rank_map.get(rid)}
-                _norm = []
-                for _d in _active_dims:
-                    r = _lr.get(_d)
-                    if r is not None:
-                        _norm.append((1 - (r - 1) / max(_n - 1, 1)) * 100)
-                _overall = round(sum(_norm) / len(_norm)) if _norm else 0
-                _pr_rows.append({
-                    "team": _td["name"], "QB": _lr.get("QB"), "RB": _lr.get("RB"),
-                    "WR": _lr.get("WR"), "TE": _lr.get("TE"),
-                    "Picks": _lr.get("PICK"), "DEF": _lr.get("DEF"), "score": _overall,
-                })
-            _pr_rows.sort(key=lambda x: x["score"], reverse=True)
-
-            # Per-position mini-rank: compact "#n" coloured by quality tier (token
-            # colours), struck-through + faint when excluded from the score.
-            def _pr_rank(rank, n, excluded=False, hl=""):
-                if rank is None:
-                    return f'<td style="text-align:center;padding:6px 4px;{hl}"><span style="color:var(--text-faint)">—</span></td>'
-                if excluded:
-                    return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
-                            f'<span style="color:var(--text-faint);text-decoration:line-through;'
-                            f'font-size:0.82rem">#{rank}</span></td>')
-                pct = 1 - (rank - 1) / max(n - 1, 1)
-                if   pct >= 0.75: c = "var(--green-bright)"
-                elif pct >= 0.5:  c = "var(--text-body)"
-                elif pct >= 0.25: c = "var(--text-mid)"
-                else:             c = "var(--pill-red-fg)"
-                return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
-                        f'<span style="color:{c};font-weight:600;font-size:0.84rem">#{rank}</span></td>')
-
-            def _pr_th(label, align="center", excluded=False):
-                deco = "text-decoration:line-through;" if excluded else ""
-                return (f'<th style="text-align:{align};padding:6px 8px 10px;color:var(--text-faint);'
-                        f'font-weight:600;font-size:11px;letter-spacing:1px;text-transform:uppercase;'
-                        f'{deco}">{label}</th>')
-
-            _tbl_html = (
-                '<table style="width:100%;border-collapse:separate;border-spacing:0 4px;font-size:0.88rem;margin-top:6px">'
-                '<thead><tr>'
-                + _pr_th("#") + _pr_th("Team", "left")
-                + _pr_th("QB") + _pr_th("RB") + _pr_th("WR") + _pr_th("TE")
-                + _pr_th("Picks", excluded=_excl_picks) + _pr_th("DEF", excluded=_excl_def)
-                + _pr_th("Score", "left")
-                + '</tr></thead><tbody>'
-            )
-
-            for i, row in enumerate(_pr_rows):
-                _is_mine = my_team and row["team"] == my_team
-                _sc = row["score"]
-                # User row reads as a rounded highlighted pill (--row-you-*); others
-                # sit transparently on the card.
-                if _is_mine:
-                    _hl   = ("background:var(--row-you-bg);border-top:1px solid var(--row-you-border);"
-                             "border-bottom:1px solid var(--row-you-border);")
-                    _hl_l = _hl + ("border-left:1px solid var(--row-you-border);"
-                                   "border-top-left-radius:10px;border-bottom-left-radius:10px;")
-                    _hl_r = _hl + ("border-right:1px solid var(--row-you-border);"
-                                   "border-top-right-radius:10px;border-bottom-right-radius:10px;")
-                    _chip_bg, _chip_fg = "var(--pill-green-bg)", "var(--green-bright)"
-                    _name_c, _name_w   = "var(--text-hi)", 700
-                    _fill, _sc_c, _sc_w = "var(--green-bright)", "var(--text-hi)", 700
-                    _you = ('<span class="pill green" style="padding:2px 9px;font-size:11px;'
-                            'margin-left:8px;vertical-align:middle">YOU</span>')
-                else:
-                    _hl = _hl_l = _hl_r = ""
-                    _chip_bg, _chip_fg = "var(--bg-raised)", "var(--text-body)"
-                    _name_c, _name_w   = "var(--text-body)", 500
-                    _fill, _sc_c, _sc_w = "var(--green)", "var(--text-body)", 600
-                    _you = ""
-
-                _chip = (f'<span style="display:inline-flex;align-items:center;justify-content:center;'
-                         f'width:28px;height:28px;border-radius:8px;background:{_chip_bg};color:{_chip_fg};'
-                         f'font-weight:700;font-size:0.84rem">{i+1}</span>')
-
-                _pr_av = user_avatar_tag(globals().get("team_owner_user", {}).get(row["team"]),
-                                         row["team"], px=22, radius=6)
-                _tbl_html += '<tr>'
-                _tbl_html += f'<td style="text-align:center;padding:6px 4px;{_hl_l}">{_chip}</td>'
-                _tbl_html += (f'<td style="padding:6px 12px;color:{_name_c};font-weight:{_name_w};{_hl}">'
-                              f'<div style="display:flex;align-items:center;gap:8px;">{_pr_av}'
-                              f'<span>{row["team"]}{_you}</span></div></td>')
-                for _dim, _excl in [("QB", False), ("RB", False), ("WR", False), ("TE", False),
-                                    ("Picks", _excl_picks), ("DEF", _excl_def)]:
-                    _tbl_html += _pr_rank(row[_dim], _n, excluded=_excl, hl=_hl)
-                _tbl_html += (f'<td style="padding:6px 14px 6px 8px;{_hl_r}">'
-                              f'<div style="display:flex;align-items:center;gap:10px">'
-                              f'<div style="background:var(--bg-hover);border-radius:4px;height:8px;flex:1;min-width:60px">'
-                              f'<div style="background:{_fill};width:{_sc}%;height:8px;border-radius:4px"></div></div>'
-                              f'<span style="font-size:0.84rem;color:{_sc_c};font-weight:{_sc_w};'
-                              f'min-width:24px;text-align:right">{_sc}</span>'
-                              f'</div></td></tr>')
-
-            _tbl_html += "</tbody></table>"
-            st.markdown(_tbl_html, unsafe_allow_html=True)
-
         with _ov_tabs[1]:
             # ── Chart A: Radar / Positional Strength ──────────────────────────────────
             with st.container():
@@ -3398,6 +3327,119 @@ if page == "Overview":
                         st.caption(f"Gold dot = {my_team}")
                 else:
                     st.info("Not enough roster age data to generate scatter chart.")
+
+            # ── League Power Rankings table ───────────────────────────────────────────
+            st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
+            st.subheader("League Power Rankings")
+
+            _cb1, _cb2, _ = st.columns([1, 1, 4])
+            _excl_def   = _cb1.checkbox("Exclude DEF",   key="pr_excl_def")
+            _excl_picks = _cb2.checkbox("Exclude Picks", key="pr_excl_picks")
+
+            _active_dims = ["QB", "RB", "WR", "TE"]
+            if not _excl_picks: _active_dims.append("PICK")
+            if not _excl_def:   _active_dims.append("DEF")
+            _dim_count = len(_active_dims)
+            st.caption(f"Score = average normalised rank across {_dim_count} dimension{'s' if _dim_count != 1 else ''}: {', '.join(_active_dims).replace('PICK','Picks')}")
+
+            _n = len(team_data)
+
+            _def_vals  = {rid: (def_analysis.get(rid) or {}).get("avg_pts") for rid in team_data}
+            _def_order = sorted([x for x in _def_vals.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
+            _def_rank_map = {rid: i + 1 for i, (rid, _) in enumerate(_def_order)}
+
+            _pr_rows = []
+            for rid, _td in team_data.items():
+                _lr = {**_td.get("pos_league_rank", {}), "DEF": _def_rank_map.get(rid)}
+                _norm = []
+                for _d in _active_dims:
+                    r = _lr.get(_d)
+                    if r is not None:
+                        _norm.append((1 - (r - 1) / max(_n - 1, 1)) * 100)
+                _overall = round(sum(_norm) / len(_norm)) if _norm else 0
+                _pr_rows.append({
+                    "team": _td["name"], "QB": _lr.get("QB"), "RB": _lr.get("RB"),
+                    "WR": _lr.get("WR"), "TE": _lr.get("TE"),
+                    "Picks": _lr.get("PICK"), "DEF": _lr.get("DEF"), "score": _overall,
+                })
+            _pr_rows.sort(key=lambda x: x["score"], reverse=True)
+
+            def _pr_rank(rank, n, excluded=False, hl=""):
+                if rank is None:
+                    return f'<td style="text-align:center;padding:6px 4px;{hl}"><span style="color:var(--text-faint)">—</span></td>'
+                if excluded:
+                    return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
+                            f'<span style="color:var(--text-faint);text-decoration:line-through;'
+                            f'font-size:0.82rem">#{rank}</span></td>')
+                pct = 1 - (rank - 1) / max(n - 1, 1)
+                if   pct >= 0.75: c = "var(--green-bright)"
+                elif pct >= 0.5:  c = "var(--text-body)"
+                elif pct >= 0.25: c = "var(--text-mid)"
+                else:             c = "var(--pill-red-fg)"
+                return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
+                        f'<span style="color:{c};font-weight:600;font-size:0.84rem">#{rank}</span></td>')
+
+            def _pr_th(label, align="center", excluded=False):
+                deco = "text-decoration:line-through;" if excluded else ""
+                return (f'<th style="text-align:{align};padding:6px 8px 10px;color:var(--text-faint);'
+                        f'font-weight:600;font-size:11px;letter-spacing:1px;text-transform:uppercase;'
+                        f'{deco}">{label}</th>')
+
+            _tbl_html = (
+                '<table style="width:100%;border-collapse:separate;border-spacing:0 4px;font-size:0.88rem;margin-top:6px">'
+                '<thead><tr>'
+                + _pr_th("#") + _pr_th("Team", "left")
+                + _pr_th("QB") + _pr_th("RB") + _pr_th("WR") + _pr_th("TE")
+                + _pr_th("Picks", excluded=_excl_picks) + _pr_th("DEF", excluded=_excl_def)
+                + _pr_th("Score", "left")
+                + '</tr></thead><tbody>'
+            )
+
+            for i, row in enumerate(_pr_rows):
+                _is_mine = my_team and row["team"] == my_team
+                _sc = row["score"]
+                if _is_mine:
+                    _hl   = ("background:var(--row-you-bg);border-top:1px solid var(--row-you-border);"
+                             "border-bottom:1px solid var(--row-you-border);")
+                    _hl_l = _hl + ("border-left:1px solid var(--row-you-border);"
+                                   "border-top-left-radius:10px;border-bottom-left-radius:10px;")
+                    _hl_r = _hl + ("border-right:1px solid var(--row-you-border);"
+                                   "border-top-right-radius:10px;border-bottom-right-radius:10px;")
+                    _chip_bg, _chip_fg = "var(--pill-green-bg)", "var(--green-bright)"
+                    _name_c, _name_w   = "var(--text-hi)", 700
+                    _fill, _sc_c, _sc_w = "var(--green-bright)", "var(--text-hi)", 700
+                    _you = ('<span class="pill green" style="padding:2px 9px;font-size:11px;'
+                            'margin-left:8px;vertical-align:middle">YOU</span>')
+                else:
+                    _hl = _hl_l = _hl_r = ""
+                    _chip_bg, _chip_fg = "var(--bg-raised)", "var(--text-body)"
+                    _name_c, _name_w   = "var(--text-body)", 500
+                    _fill, _sc_c, _sc_w = "var(--green)", "var(--text-body)", 600
+                    _you = ""
+
+                _chip = (f'<span style="display:inline-flex;align-items:center;justify-content:center;'
+                         f'width:28px;height:28px;border-radius:8px;background:{_chip_bg};color:{_chip_fg};'
+                         f'font-weight:700;font-size:0.84rem">{i+1}</span>')
+                _pr_av = user_avatar_tag(globals().get("team_owner_user", {}).get(row["team"]),
+                                         row["team"], px=22, radius=6)
+                _tbl_html += '<tr>'
+                _tbl_html += f'<td style="text-align:center;padding:6px 4px;{_hl_l}">{_chip}</td>'
+                _tbl_html += (f'<td style="padding:6px 12px;color:{_name_c};font-weight:{_name_w};{_hl}">'
+                              f'<div style="display:flex;align-items:center;gap:8px;">{_pr_av}'
+                              f'<span>{row["team"]}{_you}</span></div></td>')
+                for _dim, _excl in [("QB", False), ("RB", False), ("WR", False), ("TE", False),
+                                    ("Picks", _excl_picks), ("DEF", _excl_def)]:
+                    _tbl_html += _pr_rank(row[_dim], _n, excluded=_excl, hl=_hl)
+                _tbl_html += (f'<td style="padding:6px 14px 6px 8px;{_hl_r}">'
+                              f'<div style="display:flex;align-items:center;gap:10px">'
+                              f'<div style="background:var(--bg-hover);border-radius:4px;height:8px;flex:1;min-width:60px">'
+                              f'<div style="background:{_fill};width:{_sc}%;height:8px;border-radius:4px"></div></div>'
+                              f'<span style="font-size:0.84rem;color:{_sc_c};font-weight:{_sc_w};'
+                              f'min-width:24px;text-align:right">{_sc}</span>'
+                              f'</div></td></tr>')
+
+            _tbl_html += "</tbody></table>"
+            st.markdown(_tbl_html, unsafe_allow_html=True)
 
     # ── Page: Rosters ─────────────────────────────────────────────────────────────
     _frag_league_overview()
