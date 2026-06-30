@@ -2102,6 +2102,11 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
             st.markdown("".join(_cards), unsafe_allow_html=True)
         else:
             st.caption("No clear needs — roster is balanced.")
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        if st.button("View Trade Partners →", key="tn_trade_partners", type="primary", width="stretch"):
+            st.session_state["_tr_tab_hint"] = "Trade Partners"
+            st.session_state.nav_page = "Trade Room"
+            st.rerun()
 
     # Panel 3 — Best Trade Partner (same ranking as Trade Room > Best Trade Partners)
     with c2.container(border=True):
@@ -2188,6 +2193,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                     "side_a": [_lbl(*p) for p in send_pieces],
                     "side_b": [_lbl(*p) for p in get_pieces],
                 }
+                st.session_state["_tr_tab_hint"] = "Trade Builder"
                 st.session_state.nav_page = "Trade Room"
                 st.rerun()
             if _pc_frac > 0:
@@ -4070,14 +4076,18 @@ elif page == "Trade Room":
         rid = team_name_to_rid[sel_ta_team]
         td  = team_data[rid]
 
-        # Consume an Overview "Refine in Trade Room" deep-link → preload the Trade Builder
-        _pl = st.session_state.pop("_tb_preload", None)
+        # Consume Overview deep-links — preload trade data + show tab hint banner
+        _pl       = st.session_state.pop("_tb_preload", None)
+        _tab_hint = st.session_state.pop("_tr_tab_hint", None)
         if _pl:
             st.session_state["calc_team_a"] = _pl["team_a"]
             st.session_state["calc_team_b"] = _pl["team_b"]
             st.session_state[f"calc_side_a_{_pl['team_a']}"] = _pl["side_a"]
             st.session_state[f"calc_side_b_{_pl['team_b']}"] = _pl["side_b"]
-            st.success("Trade loaded into **Trade Builder** — open that tab to refine the pieces.")
+        if _tab_hint == "Trade Builder":
+            st.info("Trade pre-loaded — click the **Trade Builder** tab above to review and refine the pieces.")
+        elif _tab_hint == "Trade Partners":
+            st.info("Click the **Trade Partners** tab above to explore your best trade options.")
 
         # Set of Untouchable player names for THIS team — excluded from all trade-away lists
         _player_tags = st.session_state.player_tags
