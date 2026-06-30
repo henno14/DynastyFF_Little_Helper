@@ -2352,7 +2352,11 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                 for _fa in picks_rows:
                     _fpos = _fa.get("Pos", "")
                     _pbg, _pfg, _ = POS_PALETTE.get(_fpos, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
-                    _fval = _fa.get(val_col) or 0
+                    _fval_raw = _fa.get(val_col)
+                    try:
+                        _fval = int(_fval_raw) if _fval_raw is not None and _fval_raw == _fval_raw else 0
+                    except (TypeError, ValueError):
+                        _fval = 0
                     _fnfl = _fa.get("NFL Team", "FA")
                     _add_cards.append(
                         f'<div style="display:flex;align-items:center;gap:11px;background:var(--bg-surface);'
@@ -2363,7 +2367,7 @@ def render_team_dashboard(my_team, team_name_to_rid, team_data, league_avgs,
                         f'<div style="flex:1;min-width:0;">'
                         f'<div style="font-size:.86rem;color:var(--text-hi);">'
                         f'<strong>{_html.escape(str(_fa.get("Player","—")))}</strong> '
-                        f'<span style="font-size:.74rem;color:var(--text-mid);">{int(_fval):,}</span></div>'
+                        f'<span style="font-size:.74rem;color:var(--text-mid);">{_fval:,}</span></div>'
                         f'<div style="font-size:.72rem;color:var(--text-mid);margin-top:2px;">'
                         f'{_html.escape(str(_fnfl))} · Free Agent</div>'
                         f'</div>'
@@ -3139,6 +3143,117 @@ if page == "Overview":
                                   fc_values, val_maps, value_source, val_col)
 
         with _ov_tabs[1]:
+            # ── League Power Rankings — first thing users see ─────────────────────────
+            st.subheader("League Power Rankings")
+
+            _cb1, _cb2, _ = st.columns([1, 1, 4])
+            _excl_def   = _cb1.checkbox("Exclude DEF",   key="pr_excl_def")
+            _excl_picks = _cb2.checkbox("Exclude Picks", key="pr_excl_picks")
+
+            _active_dims = ["QB", "RB", "WR", "TE"]
+            if not _excl_picks: _active_dims.append("PICK")
+            if not _excl_def:   _active_dims.append("DEF")
+            _dim_count = len(_active_dims)
+            st.caption(f"Score = average normalised rank across {_dim_count} dimension{'s' if _dim_count != 1 else ''}: {', '.join(_active_dims).replace('PICK','Picks')}")
+
+            _n = len(team_data)
+
+            _def_vals  = {rid: (def_analysis.get(rid) or {}).get("avg_pts") for rid in team_data}
+            _def_order = sorted([x for x in _def_vals.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
+            _def_rank_map = {rid: i + 1 for i, (rid, _) in enumerate(_def_order)}
+
+            _pr_rows = []
+            for rid, _td in team_data.items():
+                _lr = {**_td.get("pos_league_rank", {}), "DEF": _def_rank_map.get(rid)}
+                _norm = []
+                for _d in _active_dims:
+                    r = _lr.get(_d)
+                    if r is not None:
+                        _norm.append((1 - (r - 1) / max(_n - 1, 1)) * 100)
+                _overall = round(sum(_norm) / len(_norm)) if _norm else 0
+                _pr_rows.append({
+                    "team": _td["name"], "QB": _lr.get("QB"), "RB": _lr.get("RB"),
+                    "WR": _lr.get("WR"), "TE": _lr.get("TE"),
+                    "Picks": _lr.get("PICK"), "DEF": _lr.get("DEF"), "score": _overall,
+                })
+            _pr_rows.sort(key=lambda x: x["score"], reverse=True)
+
+            def _pr_rank(rank, n, excluded=False, hl=""):
+                if rank is None:
+                    return f'<td style="text-align:center;padding:6px 4px;{hl}"><span style="color:var(--text-faint)">—</span></td>'
+                if excluded:
+                    return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
+                            f'<span style="color:var(--text-faint);text-decoration:line-through;'
+                            f'font-size:0.82rem">#{rank}</span></td>')
+                pct = 1 - (rank - 1) / max(n - 1, 1)
+                if   pct >= 0.75: c = "var(--green-bright)"
+                elif pct >= 0.5:  c = "var(--text-body)"
+                elif pct >= 0.25: c = "var(--text-mid)"
+                else:             c = "var(--pill-red-fg)"
+                return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
+                        f'<span style="color:{c};font-weight:600;font-size:0.84rem">#{rank}</span></td>')
+
+            def _pr_th(label, align="center", excluded=False):
+                deco = "text-decoration:line-through;" if excluded else ""
+                return (f'<th style="text-align:{align};padding:6px 8px 10px;color:var(--text-faint);'
+                        f'font-weight:600;font-size:11px;letter-spacing:1px;text-transform:uppercase;'
+                        f'{deco}">{label}</th>')
+
+            _tbl_html = (
+                '<table style="width:100%;border-collapse:separate;border-spacing:0 4px;font-size:0.88rem;margin-top:6px">'
+                '<thead><tr>'
+                + _pr_th("#") + _pr_th("Team", "left")
+                + _pr_th("QB") + _pr_th("RB") + _pr_th("WR") + _pr_th("TE")
+                + _pr_th("Picks", excluded=_excl_picks) + _pr_th("DEF", excluded=_excl_def)
+                + _pr_th("Score", "left")
+                + '</tr></thead><tbody>'
+            )
+            for i, row in enumerate(_pr_rows):
+                _is_mine = my_team and row["team"] == my_team
+                _sc = row["score"]
+                if _is_mine:
+                    _hl   = ("background:var(--row-you-bg);border-top:1px solid var(--row-you-border);"
+                             "border-bottom:1px solid var(--row-you-border);")
+                    _hl_l = _hl + ("border-left:1px solid var(--row-you-border);"
+                                   "border-top-left-radius:10px;border-bottom-left-radius:10px;")
+                    _hl_r = _hl + ("border-right:1px solid var(--row-you-border);"
+                                   "border-top-right-radius:10px;border-bottom-right-radius:10px;")
+                    _chip_bg, _chip_fg = "var(--pill-green-bg)", "var(--green-bright)"
+                    _name_c, _name_w   = "var(--text-hi)", 700
+                    _fill, _sc_c, _sc_w = "var(--green-bright)", "var(--text-hi)", 700
+                    _you = ('<span class="pill green" style="padding:2px 9px;font-size:11px;'
+                            'margin-left:8px;vertical-align:middle">YOU</span>')
+                else:
+                    _hl = _hl_l = _hl_r = ""
+                    _chip_bg, _chip_fg = "var(--bg-raised)", "var(--text-body)"
+                    _name_c, _name_w   = "var(--text-body)", 500
+                    _fill, _sc_c, _sc_w = "var(--green)", "var(--text-body)", 600
+                    _you = ""
+                _chip = (f'<span style="display:inline-flex;align-items:center;justify-content:center;'
+                         f'width:28px;height:28px;border-radius:8px;background:{_chip_bg};color:{_chip_fg};'
+                         f'font-weight:700;font-size:0.84rem">{i+1}</span>')
+                _pr_av = user_avatar_tag(globals().get("team_owner_user", {}).get(row["team"]),
+                                         row["team"], px=22, radius=6)
+                _tbl_html += '<tr>'
+                _tbl_html += f'<td style="text-align:center;padding:6px 4px;{_hl_l}">{_chip}</td>'
+                _tbl_html += (f'<td style="padding:6px 12px;color:{_name_c};font-weight:{_name_w};{_hl}">'
+                              f'<div style="display:flex;align-items:center;gap:8px;">{_pr_av}'
+                              f'<span>{row["team"]}{_you}</span></div></td>')
+                for _dim, _excl in [("QB", False), ("RB", False), ("WR", False), ("TE", False),
+                                    ("Picks", _excl_picks), ("DEF", _excl_def)]:
+                    _tbl_html += _pr_rank(row[_dim], _n, excluded=_excl, hl=_hl)
+                _tbl_html += (f'<td style="padding:6px 14px 6px 8px;{_hl_r}">'
+                              f'<div style="display:flex;align-items:center;gap:10px">'
+                              f'<div style="background:var(--bg-hover);border-radius:4px;height:8px;flex:1;min-width:60px">'
+                              f'<div style="background:{_fill};width:{_sc}%;height:8px;border-radius:4px"></div></div>'
+                              f'<span style="font-size:0.84rem;color:{_sc_c};font-weight:{_sc_w};'
+                              f'min-width:24px;text-align:right">{_sc}</span>'
+                              f'</div></td></tr>')
+            _tbl_html += "</tbody></table>"
+            st.markdown(_tbl_html, unsafe_allow_html=True)
+
+            st.markdown("<div style='margin-top:2rem'></div>", unsafe_allow_html=True)
+
             # ── Chart A: Radar / Positional Strength ──────────────────────────────────
             with st.container():
                 st.subheader("Positional Strength")
@@ -3327,119 +3442,6 @@ if page == "Overview":
                         st.caption(f"Gold dot = {my_team}")
                 else:
                     st.info("Not enough roster age data to generate scatter chart.")
-
-            # ── League Power Rankings table ───────────────────────────────────────────
-            st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
-            st.subheader("League Power Rankings")
-
-            _cb1, _cb2, _ = st.columns([1, 1, 4])
-            _excl_def   = _cb1.checkbox("Exclude DEF",   key="pr_excl_def")
-            _excl_picks = _cb2.checkbox("Exclude Picks", key="pr_excl_picks")
-
-            _active_dims = ["QB", "RB", "WR", "TE"]
-            if not _excl_picks: _active_dims.append("PICK")
-            if not _excl_def:   _active_dims.append("DEF")
-            _dim_count = len(_active_dims)
-            st.caption(f"Score = average normalised rank across {_dim_count} dimension{'s' if _dim_count != 1 else ''}: {', '.join(_active_dims).replace('PICK','Picks')}")
-
-            _n = len(team_data)
-
-            _def_vals  = {rid: (def_analysis.get(rid) or {}).get("avg_pts") for rid in team_data}
-            _def_order = sorted([x for x in _def_vals.items() if x[1] is not None], key=lambda x: x[1], reverse=True)
-            _def_rank_map = {rid: i + 1 for i, (rid, _) in enumerate(_def_order)}
-
-            _pr_rows = []
-            for rid, _td in team_data.items():
-                _lr = {**_td.get("pos_league_rank", {}), "DEF": _def_rank_map.get(rid)}
-                _norm = []
-                for _d in _active_dims:
-                    r = _lr.get(_d)
-                    if r is not None:
-                        _norm.append((1 - (r - 1) / max(_n - 1, 1)) * 100)
-                _overall = round(sum(_norm) / len(_norm)) if _norm else 0
-                _pr_rows.append({
-                    "team": _td["name"], "QB": _lr.get("QB"), "RB": _lr.get("RB"),
-                    "WR": _lr.get("WR"), "TE": _lr.get("TE"),
-                    "Picks": _lr.get("PICK"), "DEF": _lr.get("DEF"), "score": _overall,
-                })
-            _pr_rows.sort(key=lambda x: x["score"], reverse=True)
-
-            def _pr_rank(rank, n, excluded=False, hl=""):
-                if rank is None:
-                    return f'<td style="text-align:center;padding:6px 4px;{hl}"><span style="color:var(--text-faint)">—</span></td>'
-                if excluded:
-                    return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
-                            f'<span style="color:var(--text-faint);text-decoration:line-through;'
-                            f'font-size:0.82rem">#{rank}</span></td>')
-                pct = 1 - (rank - 1) / max(n - 1, 1)
-                if   pct >= 0.75: c = "var(--green-bright)"
-                elif pct >= 0.5:  c = "var(--text-body)"
-                elif pct >= 0.25: c = "var(--text-mid)"
-                else:             c = "var(--pill-red-fg)"
-                return (f'<td style="text-align:center;padding:6px 4px;{hl}">'
-                        f'<span style="color:{c};font-weight:600;font-size:0.84rem">#{rank}</span></td>')
-
-            def _pr_th(label, align="center", excluded=False):
-                deco = "text-decoration:line-through;" if excluded else ""
-                return (f'<th style="text-align:{align};padding:6px 8px 10px;color:var(--text-faint);'
-                        f'font-weight:600;font-size:11px;letter-spacing:1px;text-transform:uppercase;'
-                        f'{deco}">{label}</th>')
-
-            _tbl_html = (
-                '<table style="width:100%;border-collapse:separate;border-spacing:0 4px;font-size:0.88rem;margin-top:6px">'
-                '<thead><tr>'
-                + _pr_th("#") + _pr_th("Team", "left")
-                + _pr_th("QB") + _pr_th("RB") + _pr_th("WR") + _pr_th("TE")
-                + _pr_th("Picks", excluded=_excl_picks) + _pr_th("DEF", excluded=_excl_def)
-                + _pr_th("Score", "left")
-                + '</tr></thead><tbody>'
-            )
-
-            for i, row in enumerate(_pr_rows):
-                _is_mine = my_team and row["team"] == my_team
-                _sc = row["score"]
-                if _is_mine:
-                    _hl   = ("background:var(--row-you-bg);border-top:1px solid var(--row-you-border);"
-                             "border-bottom:1px solid var(--row-you-border);")
-                    _hl_l = _hl + ("border-left:1px solid var(--row-you-border);"
-                                   "border-top-left-radius:10px;border-bottom-left-radius:10px;")
-                    _hl_r = _hl + ("border-right:1px solid var(--row-you-border);"
-                                   "border-top-right-radius:10px;border-bottom-right-radius:10px;")
-                    _chip_bg, _chip_fg = "var(--pill-green-bg)", "var(--green-bright)"
-                    _name_c, _name_w   = "var(--text-hi)", 700
-                    _fill, _sc_c, _sc_w = "var(--green-bright)", "var(--text-hi)", 700
-                    _you = ('<span class="pill green" style="padding:2px 9px;font-size:11px;'
-                            'margin-left:8px;vertical-align:middle">YOU</span>')
-                else:
-                    _hl = _hl_l = _hl_r = ""
-                    _chip_bg, _chip_fg = "var(--bg-raised)", "var(--text-body)"
-                    _name_c, _name_w   = "var(--text-body)", 500
-                    _fill, _sc_c, _sc_w = "var(--green)", "var(--text-body)", 600
-                    _you = ""
-
-                _chip = (f'<span style="display:inline-flex;align-items:center;justify-content:center;'
-                         f'width:28px;height:28px;border-radius:8px;background:{_chip_bg};color:{_chip_fg};'
-                         f'font-weight:700;font-size:0.84rem">{i+1}</span>')
-                _pr_av = user_avatar_tag(globals().get("team_owner_user", {}).get(row["team"]),
-                                         row["team"], px=22, radius=6)
-                _tbl_html += '<tr>'
-                _tbl_html += f'<td style="text-align:center;padding:6px 4px;{_hl_l}">{_chip}</td>'
-                _tbl_html += (f'<td style="padding:6px 12px;color:{_name_c};font-weight:{_name_w};{_hl}">'
-                              f'<div style="display:flex;align-items:center;gap:8px;">{_pr_av}'
-                              f'<span>{row["team"]}{_you}</span></div></td>')
-                for _dim, _excl in [("QB", False), ("RB", False), ("WR", False), ("TE", False),
-                                    ("Picks", _excl_picks), ("DEF", _excl_def)]:
-                    _tbl_html += _pr_rank(row[_dim], _n, excluded=_excl, hl=_hl)
-                _tbl_html += (f'<td style="padding:6px 14px 6px 8px;{_hl_r}">'
-                              f'<div style="display:flex;align-items:center;gap:10px">'
-                              f'<div style="background:var(--bg-hover);border-radius:4px;height:8px;flex:1;min-width:60px">'
-                              f'<div style="background:{_fill};width:{_sc}%;height:8px;border-radius:4px"></div></div>'
-                              f'<span style="font-size:0.84rem;color:{_sc_c};font-weight:{_sc_w};'
-                              f'min-width:24px;text-align:right">{_sc}</span>'
-                              f'</div></td></tr>')
-
-            _tbl_html += "</tbody></table>"
-            st.markdown(_tbl_html, unsafe_allow_html=True)
 
     # ── Page: Rosters ─────────────────────────────────────────────────────────────
     _frag_league_overview()
