@@ -3509,8 +3509,131 @@ elif page == "Players & Picks":
                             else pd.to_numeric(col, errors="coerce").fillna(999999),
         ).reset_index(drop=True)
 
-        fav_grid(dv[display_cols], "Player", "r_fav_grid", col_cfg=col_cfg)
-        st.caption(f"{plural(len(dv), 'player')} shown · all sources normalised to 0–10K · tick the Fav box to favourite")
+        # ── Styled player rows (matches Rookie Pool card style) ──────────────────
+        @st.fragment
+        def _players_fragment():
+            favs  = st.session_state.favorites
+            _rows = dv.copy().reset_index(drop=True)
+            if _rows.empty:
+                st.info("No players match your filters. Try clearing the search or changing position.")
+                return
+
+            _val_col_show = _src_cols[0] if _src_cols else None
+
+            # Header — padding-right:20px reserves space for the scrollbar so
+            # fixed-width right columns don't shift under it.
+            _ph, _ph_fav = st.columns([7, 0.7])
+            _ph.markdown(
+                '<div style="display:flex;align-items:center;gap:8px;'
+                'padding:3px 20px 5px 17px;border-left:3px solid transparent;'
+                'font:600 11px/1 var(--font-sans,sans-serif);letter-spacing:.08em;'
+                'text-transform:uppercase;color:var(--text-low);">'
+                '<span style="flex:0 0 34px;"></span>'
+                '<span style="flex:1;">Player</span>'
+                '<span style="flex:0 0 60px;text-align:center;">Slot</span>'
+                '<span style="flex:0 0 58px;text-align:right;">Status</span>'
+                '<span style="flex:0 0 52px;text-align:right;">Pts</span>'
+                '<span style="flex:0 0 42px;text-align:right;">Rank</span>'
+                '<span style="flex:0 0 60px;text-align:right;">Value</span>'
+                '</div>', unsafe_allow_html=True)
+            _ph_fav.markdown(
+                '<div style="font:600 11px/1 var(--font-sans,sans-serif);letter-spacing:.08em;'
+                'text-transform:uppercase;color:var(--text-low);text-align:center;padding-top:5px;">Fav</div>',
+                unsafe_allow_html=True)
+
+            with st.container(height=530):
+                for i, row in _rows.iterrows():
+                    nm     = str(row.get("Player") or "—")
+                    pos    = str(row.get("Pos") or "—")
+                    team   = str(row.get("Team") or "—")
+                    slot   = str(row.get("Slot") or "—")
+                    nfl    = str(row.get("NFL Team") or "")
+                    rspot  = str(row.get("Roster Spot") or "")
+                    age    = row.get("Age")
+                    exp    = str(row.get("Exp") or "")
+                    status = str(row.get("Status") or "Active")
+                    pts_v  = row.get(f"{STATS_SEASON} Pts")
+                    rank_v = row.get("Rank")
+                    val_v  = row.get(_val_col_show) if _val_col_show else None
+                    is_fav = nm in favs
+
+                    # Formatted values
+                    _age_s  = f"{int(age)}yr" if age and age == age else ""
+                    _exp_s  = exp if exp and exp != "—" else ""
+                    _pts_s  = f"{float(pts_v):.1f}" if pts_v and pts_v == pts_v else "—"
+                    _rank_s = f"#{int(rank_v)}" if rank_v and rank_v == rank_v else "—"
+                    try:
+                        _val_s = f"{int(val_v):,}" if val_v and val_v == val_v else "—"
+                    except (TypeError, ValueError):
+                        _val_s = "—"
+
+                    # Meta sub-line: "Team · NFL Roster Spot · 24yr · 2yr exp"
+                    _meta_parts = [p for p in [team,
+                                               (f"{nfl} {rspot}".strip() if nfl else ""),
+                                               _age_s,
+                                               (_exp_s + " exp" if _exp_s and _exp_s not in ("0yr","Rookie") else ("Rookie" if _exp_s == "Rookie" else ""))]
+                                   if p]
+                    _meta = " · ".join(_meta_parts)
+
+                    # Slot pill
+                    _slot_styles = {
+                        "Starter": ("var(--pill-green-bg)", "var(--green-bright)"),
+                        "Bench":   ("var(--bg-raised)",     "var(--text-mid)"),
+                        "Taxi":    ("var(--pill-blue-bg)",  "var(--pill-blue-fg)"),
+                    }
+                    _sbg, _sfg = _slot_styles.get(slot, ("var(--bg-raised)", "var(--text-mid)"))
+                    _slot_pill = (f'<span style="background:{_sbg};color:{_sfg};font-size:.67rem;'
+                                  f'font-weight:600;padding:2px 8px;border-radius:99px;'
+                                  f'white-space:nowrap;">{_html.escape(slot)}</span>')
+
+                    # Status colour
+                    _st_low = status.lower()
+                    if any(w in _st_low for w in ["ir", "out", "pup"]):
+                        _st_c = "var(--pill-red-fg)"
+                    elif any(w in _st_low for w in ["question", "doubt", "day"]):
+                        _st_c = "var(--gold)"
+                    else:
+                        _st_c = "var(--text-low)"
+                    _status_trunc = status[:10] + ("…" if len(status) > 10 else "")
+
+                    _pbg, _pfg, _ = POS_PALETTE.get(pos, ("--pill-blue-bg", "--pill-blue-fg", "--blue"))
+                    _rail = "var(--gold)" if is_fav else "transparent"
+
+                    ci, cf = st.columns([7, 0.7], vertical_alignment="center")
+                    ci.markdown(
+                        f'<div style="display:flex;align-items:center;gap:8px;padding:7px 14px;margin:2px 0;'
+                        f'border-radius:8px;background:var(--bg-surface);border-left:3px solid {_rail};">'
+                        f'<span style="flex:0 0 34px;display:flex;justify-content:center;">'
+                        f'<span style="width:30px;height:30px;border-radius:7px;background:var({_pbg});color:var({_pfg});'
+                        f'display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.70rem;">'
+                        f'{POS_ABBR.get(pos, pos[:2])}</span></span>'
+                        f'<span style="flex:1;min-width:0;">'
+                        f'<div style="font-weight:500;font-size:.86rem;color:var(--text-hi);white-space:nowrap;'
+                        f'overflow:hidden;text-overflow:ellipsis;">{_html.escape(nm)}</div>'
+                        f'<div style="font-size:.70rem;color:var(--text-low);margin-top:1px;white-space:nowrap;'
+                        f'overflow:hidden;text-overflow:ellipsis;">{_html.escape(_meta)}</div>'
+                        f'</span>'
+                        f'<span style="flex:0 0 60px;text-align:center;">{_slot_pill}</span>'
+                        f'<span style="flex:0 0 58px;text-align:right;font-size:.75rem;color:{_st_c};'
+                        f'white-space:nowrap;">{_html.escape(_status_trunc)}</span>'
+                        f'<span style="flex:0 0 52px;text-align:right;font-size:.80rem;color:var(--text-mid);'
+                        f'font-variant-numeric:tabular-nums;">{_pts_s}</span>'
+                        f'<span style="flex:0 0 42px;text-align:right;font-size:.78rem;color:var(--text-low);">{_rank_s}</span>'
+                        f'<span style="flex:0 0 60px;text-align:right;font-size:.84rem;font-weight:600;'
+                        f'color:var(--text-hi);font-variant-numeric:tabular-nums;">{_val_s}</span>'
+                        f'</div>', unsafe_allow_html=True)
+
+                    if cf.button("★" if is_fav else "☆", key=f"pp_pfav_{i}_{nm[:12]}",
+                                 help="Remove favourite" if is_fav else "Add favourite"):
+                        _new = set(favs)
+                        _new.discard(nm) if is_fav else _new.add(nm)
+                        st.session_state.favorites = _new
+                        save_favorites(_new)
+                        st.rerun()
+
+            st.caption(f"{plural(len(_rows), 'player')} shown · values normalised to 0–10K · click ★ to favourite")
+
+        _players_fragment()
 
         st.divider()
         rid_to_name = {rid: _td2["name"] for rid, _td2 in team_data.items()}
